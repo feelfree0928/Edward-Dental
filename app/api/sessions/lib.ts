@@ -45,6 +45,10 @@ export function toErrorResponse(error: unknown, fallback = "Unexpected server er
   return NextResponse.json({ error: toErrorMessage(error, fallback) }, { status });
 }
 
+export function isSessionReviewReady(status: SessionRow["status"]): boolean {
+  return status === "completed" || status === "approved";
+}
+
 export function rowToSessionResponse(row: SessionRow, messageCount = 0) {
   return {
     id: row.id,
@@ -53,6 +57,7 @@ export function rowToSessionResponse(row: SessionRow, messageCount = 0) {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     messageCount,
+    summaryReady: isSessionReviewReady(row.status),
   };
 }
 
@@ -120,48 +125,56 @@ async function upsertClinicalSummary(
   });
 }
 
+async function markSessionCompleted(
+  supabase: ReturnType<typeof resolveSupabaseClient>,
+  sessionId: string
+) {
+  await supabase.from("sessions").update({ status: "completed" }).eq("id", sessionId);
+}
+
 export async function endSessionWithSummary(sessionId: string): Promise<void> {
   const supabase = resolveSupabaseClient();
   const endedAt = new Date().toISOString();
 
   await supabase
     .from("sessions")
-    .update({ status: "completed", ended_at: endedAt })
+    .update({ status: "summarizing", ended_at: endedAt })
     .eq("id", sessionId);
 
-  const { data: msgRows } = await supabase
-    .from("messages")
-    .select("role, content")
-    .eq("session_id", sessionId)
-    .order("created_at", { ascending: true });
+  try {
+    const { data: msgRows } = await supabase
+      .from("messages")
+      .select("role, content")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true });
 
-  const messages = msgRows ?? [];
+    const messages = msgRows ?? [];
 
-  if (messages.length === 0) {
-    await upsertClinicalSummary(supabase, sessionId, {
-      chief_complaint: null,
-      medical_history: null,
-      dental_history: null,
-      medications: null,
-      allergies: null,
-      notes: null,
-    });
-    return;
-  }
+    if (messages.length === 0) {
+      await upsertClinicalSummary(supabase, sessionId, {
+        chief_complaint: null,
+        medical_history: null,
+        dental_history: null,
+        medications: null,
+        allergies: null,
+        notes: null,
+      });
+      return;
+    }
 
-  const saveFallbackSummary = () =>
-    upsertClinicalSummary(supabase, sessionId, extractFallbackSummary(messages));
+    const saveFallbackSummary = () =>
+      upsertClinicalSummary(supabase, sessionId, extractFallbackSummary(messages));
 
-  if (isIntakeFallbackEnabled()) {
-    await saveFallbackSummary();
-    return;
-  }
+    if (isIntakeFallbackEnabled()) {
+      await saveFallbackSummary();
+      return;
+    }
 
-  const transcript = messages
-    .map((m) => `${m.role === "patient" ? "Patient" : "Dental Assistant"}: ${m.content}`)
-    .join("\n\n");
+    const transcript = messages
+      .map((m) => `${m.role === "patient" ? "Patient" : "Dental Assistant"}: ${m.content}`)
+      .join("\n\n");
 
-  const summaryPrompt = `You are preparing a detailed dental intake handoff note for clinical staff.
+    const summaryPrompt = `You are preparing a detailed dental intake handoff note for clinical staff.
 
 Use the extract_clinical_summary tool and populate every field with the most specific information available from the transcript.
 
@@ -181,47 +194,61 @@ Requirements:
 Conversation transcript:
 ${transcript}`;
 
-  const anthropic = getAnthropicClient();
-  if (!anthropic) {
-    await saveFallbackSummary();
-    return;
-  }
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const summaryResponse = await anthropic.messages.create({
-        model: CLAUDE_MODEL,
-        max_tokens: 1600,
-        tools: [extractSummaryTool],
-        tool_choice: { type: "any" },
-        messages: [{ role: "user", content: summaryPrompt }],
-      });
-
-      const toolUse = summaryResponse.content.find(
-        (b) => b.type === "tool_use" && b.name === "extract_clinical_summary"
-      ) as Extract<Anthropic.ContentBlock, { type: "tool_use" }> | undefined;
-
-      if (toolUse) {
-        const input = toolUse.input as Record<string, string | null>;
-        await upsertClinicalSummary(supabase, sessionId, {
-          chief_complaint: input.chiefComplaint ?? null,
-          medical_history: input.medicalHistory ?? null,
-          dental_history: input.dentalHistory ?? null,
-          medications: input.medications ?? null,
-          allergies: input.allergies ?? null,
-          notes: input.notes ?? null,
-        });
-        return;
-      }
-    } catch (err) {
-      if (isAnthropicAccessDenied(err)) {
-        console.warn("Anthropic API returned 403; saved fallback clinical summary.");
-        await saveFallbackSummary();
-        return;
-      }
-      console.error(`Summary generation attempt ${attempt + 1} failed:`, err);
+    const anthropic = getAnthropicClient();
+    if (!anthropic) {
+      await saveFallbackSummary();
+      return;
     }
-  }
 
-  await saveFallbackSummary();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const summaryResponse = await anthropic.messages.create({
+          model: CLAUDE_MODEL,
+          max_tokens: 1600,
+          tools: [extractSummaryTool],
+          tool_choice: { type: "any" },
+          messages: [{ role: "user", content: summaryPrompt }],
+        });
+
+        const toolUse = summaryResponse.content.find(
+          (b) => b.type === "tool_use" && b.name === "extract_clinical_summary"
+        ) as Extract<Anthropic.ContentBlock, { type: "tool_use" }> | undefined;
+
+        if (toolUse) {
+          const input = toolUse.input as Record<string, string | null>;
+          await upsertClinicalSummary(supabase, sessionId, {
+            chief_complaint: input.chiefComplaint ?? null,
+            medical_history: input.medicalHistory ?? null,
+            dental_history: input.dentalHistory ?? null,
+            medications: input.medications ?? null,
+            allergies: input.allergies ?? null,
+            notes: input.notes ?? null,
+          });
+          return;
+        }
+      } catch (err) {
+        if (isAnthropicAccessDenied(err)) {
+          console.warn("Anthropic API returned 403; saved fallback clinical summary.");
+          await saveFallbackSummary();
+          return;
+        }
+        console.error(`Summary generation attempt ${attempt + 1} failed:`, err);
+      }
+    }
+
+    await saveFallbackSummary();
+  } catch (err) {
+    console.error("Summary generation failed; attempting fallback summary:", err);
+    const { data: msgRows } = await supabase
+      .from("messages")
+      .select("role, content")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true });
+    const messages = msgRows ?? [];
+    if (messages.length > 0) {
+      await upsertClinicalSummary(supabase, sessionId, extractFallbackSummary(messages));
+    }
+  } finally {
+    await markSessionCompleted(supabase, sessionId);
+  }
 }

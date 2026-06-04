@@ -19,7 +19,9 @@ export function SessionDetailView({ sessionId, onBack }: { sessionId: string; on
     },
     refetchInterval: (query) => {
       const data = query.state.data as { status?: string } | undefined;
-      return data?.status === "active" ? 3000 : false;
+      if (data?.status === "active") return 3000;
+      if (data?.status === "summarizing") return 2000;
+      return false;
     },
   });
 
@@ -42,6 +44,29 @@ export function SessionDetailView({ sessionId, onBack }: { sessionId: string; on
     return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
   }
 
+  if (session.status === "summarizing") {
+    return (
+      <div className="flex-1 flex flex-col h-full bg-background">
+        <div className="h-16 border-b border-border flex items-center px-6 bg-card shrink-0">
+          <Button variant="ghost" size="icon" onClick={onBack}>
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
+          <Loader2 className="w-10 h-10 animate-spin text-primary" />
+          <div>
+            <h2 className="text-xl font-semibold text-foreground">Preparing clinical summary</h2>
+            <p className="text-muted-foreground mt-2 max-w-md">
+              Please wait while AI finalizes the handoff notes.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const summaryReady = session.status === "completed" || session.status === "approved";
+
   return (
     <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
       {/* Header */}
@@ -55,7 +80,7 @@ export function SessionDetailView({ sessionId, onBack }: { sessionId: string; on
             <p className="text-xs text-muted-foreground">Session ID: {session.id.split('-')[0]}</p>
           </div>
         </div>
-        {session.status !== "approved" && session.status !== "active" && (
+        {session.status === "completed" && (
           <Button onClick={() => approveSession.mutate()} disabled={approveSession.isPending}>
             {approveSession.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
             Approve & Save
@@ -99,14 +124,18 @@ export function SessionDetailView({ sessionId, onBack }: { sessionId: string; on
             </p>
           </div>
           <ScrollArea className="flex-1 p-6">
-            <div className="space-y-4 max-w-2xl">
-              <SummaryField label="Chief Complaint" field="chiefComplaint" value={session.summary?.chiefComplaint} sessionId={sessionId} />
-              <SummaryField label="Medical History" field="medicalHistory" value={session.summary?.medicalHistory} sessionId={sessionId} />
-              <SummaryField label="Dental History" field="dentalHistory" value={session.summary?.dentalHistory} sessionId={sessionId} />
-              <SummaryField label="Medications" field="medications" value={session.summary?.medications} sessionId={sessionId} />
-              <SummaryField label="Allergies" field="allergies" value={session.summary?.allergies} sessionId={sessionId} />
-              <SummaryField label="Detailed Notes (Flags + Prep)" field="notes" value={session.summary?.notes} sessionId={sessionId} />
-            </div>
+            {summaryReady ? (
+              <div className="space-y-4 max-w-2xl">
+                <SummaryField label="Chief Complaint" field="chiefComplaint" value={session.summary?.chiefComplaint} sessionId={sessionId} />
+                <SummaryField label="Medical History" field="medicalHistory" value={session.summary?.medicalHistory} sessionId={sessionId} />
+                <SummaryField label="Dental History" field="dentalHistory" value={session.summary?.dentalHistory} sessionId={sessionId} />
+                <SummaryField label="Medications" field="medications" value={session.summary?.medications} sessionId={sessionId} />
+                <SummaryField label="Allergies" field="allergies" value={session.summary?.allergies} sessionId={sessionId} />
+                <SummaryField label="Detailed Notes (Flags + Prep)" field="notes" value={session.summary?.notes} sessionId={sessionId} />
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-sm">Summary will appear once the session is ready for review.</p>
+            )}
           </ScrollArea>
         </div>
       </div>

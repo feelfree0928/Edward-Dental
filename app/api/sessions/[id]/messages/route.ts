@@ -49,9 +49,7 @@ async function respondWithFallback(
 
   if (shouldCompleteIntake(patientCount, lastPatient)) {
     const aiRow = await saveAssistantMessage(supabase, sessionId, FALLBACK_FAREWELL);
-    endSessionWithSummary(sessionId).catch((err) =>
-      console.error("Background summary generation failed:", err)
-    );
+    await endSessionWithSummary(sessionId);
     return NextResponse.json({ ...messageRowToApi(aiRow), sessionEnded: true, fallback: true });
   }
 
@@ -143,9 +141,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         const farewell = input.farewell_message;
         const aiRow = await saveAssistantMessage(supabase, sessionId, farewell);
 
-        endSessionWithSummary(sessionId).catch((err) =>
-          console.error("Background summary generation failed:", err)
-        );
+        await endSessionWithSummary(sessionId);
 
         return NextResponse.json({ ...messageRowToApi(aiRow), sessionEnded: true });
       }

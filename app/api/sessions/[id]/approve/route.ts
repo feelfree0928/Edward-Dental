@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import type { SessionRow } from "@/lib/supabase";
 import {
   fetchSessionDetail,
+  isSessionReviewReady,
   messageRowToApi,
   resolveSupabaseClient,
   rowToSessionResponse,
@@ -12,6 +14,23 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   try {
     const supabase = resolveSupabaseClient();
     const { id: sessionId } = await params;
+
+    const { data: existing } = await supabase
+      .from("sessions")
+      .select("status")
+      .eq("id", sessionId)
+      .single<Pick<SessionRow, "status">>();
+
+    if (!existing) {
+      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+    }
+
+    if (!isSessionReviewReady(existing.status)) {
+      return NextResponse.json(
+        { error: "Clinical summary is still being generated. Try again shortly." },
+        { status: 409 }
+      );
+    }
 
     const { error } = await supabase
       .from("sessions")

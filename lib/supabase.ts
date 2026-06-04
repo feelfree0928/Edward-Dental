@@ -5,7 +5,7 @@ const REQUIRED_SUPABASE_ENV = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"] as c
 export interface SessionRow {
   id: string;
   patient_name: string | null;
-  status: "active" | "completed" | "approved";
+  status: "active" | "summarizing" | "completed" | "approved";
   started_at: string;
   ended_at: string | null;
 }
