@@ -1,0 +1,206 @@
+"use client";
+
+import { useState } from "react";
+import { ArrowLeft, Loader2, Bot, User, CheckCircle2, Edit2, Check } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
+
+export function SessionDetailView({ sessionId, onBack }: { sessionId: string; onBack: () => void }) {
+  const { data: session, isLoading } = useQuery({
+    queryKey: ["session", sessionId],
+    queryFn: async () => {
+      const res = await fetch(`/api/sessions/${sessionId}`);
+      if (!res.ok) throw new Error("Failed to fetch session");
+      return res.json();
+    },
+    refetchInterval: (query) => {
+      const data = query.state.data as { status?: string } | undefined;
+      return data?.status === "active" ? 3000 : false;
+    },
+  });
+
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const approveSession = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/sessions/${sessionId}/approve`, { method: "POST" });
+      if (!res.ok) throw new Error("Failed to approve");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Session Approved", description: "Summary saved successfully." });
+      queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+    },
+  });
+
+  if (isLoading || !session) {
+    return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
+  }
+
+  return (
+    <div className="flex-1 flex flex-col h-full bg-background overflow-hidden">
+      {/* Header */}
+      <div className="h-16 border-b border-border flex items-center justify-between px-6 bg-card shrink-0">
+        <div className="flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={onBack}>
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
+          <div>
+            <h2 className="font-semibold text-lg">{session.patientName || "Anonymous"} — Review</h2>
+            <p className="text-xs text-muted-foreground">Session ID: {session.id.split('-')[0]}</p>
+          </div>
+        </div>
+        {session.status !== "approved" && session.status !== "active" && (
+          <Button onClick={() => approveSession.mutate()} disabled={approveSession.isPending}>
+            {approveSession.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+            Approve & Save
+          </Button>
+        )}
+        {session.status === "approved" && (
+          <div className="flex items-center text-green-600 font-medium bg-green-50 px-3 py-1.5 rounded-full text-sm">
+            <CheckCircle2 className="w-4 h-4 mr-2" /> Approved
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left: Transcript */}
+        <div className="w-1/2 border-r border-border bg-muted/20 flex flex-col h-full">
+          <div className="p-4 border-b border-border bg-card shrink-0">
+            <h3 className="font-semibold text-foreground">Chat Transcript</h3>
+          </div>
+          <ScrollArea className="flex-1 p-6">
+            <div className="space-y-6">
+              {session.messages.map((msg: { id: string; role: string; content: string }) => (
+                <div key={msg.id} className="flex gap-3">
+                  <div className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center mt-1 ${msg.role === "patient" ? "bg-secondary text-secondary-foreground" : "bg-primary text-primary-foreground"}`}>
+                    {msg.role === "patient" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                  </div>
+                  <div className={`p-4 rounded-xl ${msg.role === "patient" ? "bg-card border border-border" : "bg-primary/5 border border-primary/10"}`}>
+                    <p className="text-[14px] leading-relaxed text-foreground whitespace-pre-wrap">{msg.content}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+
+        {/* Right: Summary */}
+        <div className="w-1/2 flex flex-col bg-background h-full">
+          <div className="p-4 border-b border-border bg-card shrink-0">
+            <h3 className="font-semibold text-foreground">Clinical Handoff Summary</h3>
+            <p className="text-xs text-muted-foreground">
+              Click any field to edit before approving. Notes should include red flags, missing details, and front-desk prep context.
+            </p>
+          </div>
+          <ScrollArea className="flex-1 p-6">
+            <div className="space-y-4 max-w-2xl">
+              <SummaryField label="Chief Complaint" field="chiefComplaint" value={session.summary?.chiefComplaint} sessionId={sessionId} />
+              <SummaryField label="Medical History" field="medicalHistory" value={session.summary?.medicalHistory} sessionId={sessionId} />
+              <SummaryField label="Dental History" field="dentalHistory" value={session.summary?.dentalHistory} sessionId={sessionId} />
+              <SummaryField label="Medications" field="medications" value={session.summary?.medications} sessionId={sessionId} />
+              <SummaryField label="Allergies" field="allergies" value={session.summary?.allergies} sessionId={sessionId} />
+              <SummaryField label="Detailed Notes (Flags + Prep)" field="notes" value={session.summary?.notes} sessionId={sessionId} />
+            </div>
+          </ScrollArea>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function renderMarkdownBold(text: string) {
+  const lines = text.split("\n");
+  return lines.map((line, lineIndex) => {
+    const parts: Array<string | JSX.Element> = [];
+    const pattern = /\*\*(.+?)\*\*/g;
+    let lastIndex = 0;
+    let matchIndex = 0;
+
+    for (const match of line.matchAll(pattern)) {
+      const start = match.index ?? 0;
+      if (start > lastIndex) {
+        parts.push(line.slice(lastIndex, start));
+      }
+
+      const boldText = match[1] ?? "";
+      parts.push(
+        <strong key={`bold-${lineIndex}-${matchIndex}`} className="font-semibold">
+          {boldText}
+        </strong>
+      );
+
+      lastIndex = start + match[0].length;
+      matchIndex += 1;
+    }
+
+    if (lastIndex < line.length) {
+      parts.push(line.slice(lastIndex));
+    }
+
+    return (
+      <span key={`line-${lineIndex}`}>
+        {parts.length > 0 ? parts : line}
+        {lineIndex < lines.length - 1 ? <br /> : null}
+      </span>
+    );
+  });
+}
+
+function SummaryField({ label, field, value, sessionId }: { label: string; field: string; value?: string | null; sessionId: string }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [currentValue, setCurrentValue] = useState(value || "");
+  const queryClient = useQueryClient();
+
+  const handleStartEditing = () => {
+    setCurrentValue(value || "");
+    setIsEditing(true);
+  };
+
+  const updateSummary = useMutation({
+    mutationFn: async (data: Record<string, string | null>) => {
+      const res = await fetch(`/api/sessions/${sessionId}/summary`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to update summary");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+    },
+  });
+
+  const handleSave = () => {
+    setIsEditing(false);
+    if (currentValue !== (value || "")) {
+      updateSummary.mutate({ [field]: currentValue });
+    }
+  };
+
+  if (isEditing) {
+    return (
+      <Card className="p-4 border-primary ring-1 ring-primary/20 shadow-sm relative group">
+        <label className="text-xs font-semibold text-primary uppercase tracking-wider mb-2 block">{label}</label>
+        <Textarea value={currentValue} onChange={(e) => setCurrentValue(e.target.value)} onBlur={handleSave} autoFocus className="min-h-[100px] border-0 focus-visible:ring-0 p-0 resize-none" />
+        <div className="absolute top-4 right-4 text-primary"><Check className="w-4 h-4" /></div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="p-4 border-border hover:border-accent hover:ring-1 hover:ring-accent/20 cursor-text transition-all group relative bg-card shadow-sm" onClick={handleStartEditing}>
+      <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block group-hover:text-accent transition-colors">{label}</label>
+      <div className="text-foreground text-[15px] whitespace-pre-wrap min-h-[24px]">
+        {value ? renderMarkdownBold(value) : <span className="text-muted-foreground italic">Not specified</span>}
+      </div>
+      <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 text-accent transition-opacity"><Edit2 className="w-4 h-4" /></div>
+    </Card>
+  );
+}
