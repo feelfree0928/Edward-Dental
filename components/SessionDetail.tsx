@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ArrowLeft, Loader2, Bot, User, CheckCircle2, Edit2, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -117,7 +117,7 @@ export function SessionDetailView({ sessionId, onBack }: { sessionId: string; on
 function renderMarkdownBold(text: string) {
   const lines = text.split("\n");
   return lines.map((line, lineIndex) => {
-    const parts: Array<string | JSX.Element> = [];
+    const parts: Array<string | ReactNode> = [];
     const pattern = /\*\*(.+?)\*\*/g;
     let lastIndex = 0;
     let matchIndex = 0;
