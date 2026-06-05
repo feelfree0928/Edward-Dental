@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { ArrowLeft, Loader2, Bot, User, CheckCircle2, Edit2, Check } from "lucide-react";
+import { ArrowLeft, Loader2, Bot, User, CheckCircle2, Edit2, Check, ChevronDown, ChevronUp, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
@@ -115,30 +116,140 @@ export function SessionDetailView({ sessionId, onBack }: { sessionId: string; on
           </ScrollArea>
         </div>
 
-        {/* Right: Summary */}
+        {/* Right: Consent + Summary */}
         <div className="w-1/2 flex flex-col bg-background h-full">
-          <div className="p-4 border-b border-border bg-card shrink-0">
-            <h3 className="font-semibold text-foreground">Clinical Handoff Summary</h3>
-            <p className="text-xs text-muted-foreground">
-              Click any field to edit before approving. Notes should include red flags, missing details, and front-desk prep context.
-            </p>
-          </div>
-          <ScrollArea className="flex-1 p-6">
-            {summaryReady ? (
-              <div className="space-y-4 max-w-2xl">
+          <ScrollArea className="flex-1 w-full">
+            <div className="p-6 space-y-6 w-full min-w-0">
+              <ConsentAuditPanel consent={session.consent} />
+
+              <div>
+                <h3 className="font-semibold text-foreground mb-1">Clinical Handoff Summary</h3>
+                <p className="text-xs text-muted-foreground mb-4">
+                  Click any field to edit before approving. Notes should include red flags, missing details, and front-desk prep context.
+                </p>
+                {summaryReady ? (
+                  <div className="space-y-4">
                 <SummaryField label="Chief Complaint" field="chiefComplaint" value={session.summary?.chiefComplaint} sessionId={sessionId} />
                 <SummaryField label="Medical History" field="medicalHistory" value={session.summary?.medicalHistory} sessionId={sessionId} />
                 <SummaryField label="Dental History" field="dentalHistory" value={session.summary?.dentalHistory} sessionId={sessionId} />
                 <SummaryField label="Medications" field="medications" value={session.summary?.medications} sessionId={sessionId} />
                 <SummaryField label="Allergies" field="allergies" value={session.summary?.allergies} sessionId={sessionId} />
                 <SummaryField label="Detailed Notes (Flags + Prep)" field="notes" value={session.summary?.notes} sessionId={sessionId} />
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground text-sm">Summary will appear once the session is ready for review.</p>
+                )}
               </div>
-            ) : (
-              <p className="text-muted-foreground text-sm">Summary will appear once the session is ready for review.</p>
-            )}
+            </div>
           </ScrollArea>
         </div>
       </div>
+    </div>
+  );
+}
+
+type ConsentQuestion = {
+  index: number;
+  question: string;
+  answer: string | null;
+  passed: boolean | null;
+  retries: number;
+};
+
+type ConsentAudit = {
+  consentShownAt: string;
+  intakeStartedAt: string | null;
+  consentAccepted: boolean;
+  consentLanguage: string;
+  questions: ConsentQuestion[];
+};
+
+function ConsentAuditPanel({ consent }: { consent: ConsentAudit | null }) {
+  const [languageExpanded, setLanguageExpanded] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-semibold text-foreground">Consent &amp; Verification</h3>
+        {consent?.consentAccepted ? (
+          <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 gap-1.5 py-1">
+            <CheckCircle2 className="w-3 h-3" />
+            Consent Accepted
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="bg-muted text-muted-foreground border-border gap-1.5 py-1">
+            Not Recorded
+          </Badge>
+        )}
+      </div>
+
+      {!consent ? (
+        <p className="text-muted-foreground text-sm">No consent record for this session.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            <Card className="p-3 border-border bg-card">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">Consent screen shown</p>
+              <p className="text-foreground">{new Date(consent.consentShownAt).toLocaleString()}</p>
+            </Card>
+            <Card className="p-3 border-border bg-card">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">Clinical intake began</p>
+              <p className="text-foreground">
+                {consent.intakeStartedAt ? new Date(consent.intakeStartedAt).toLocaleString() : "—"}
+              </p>
+            </Card>
+          </div>
+
+          <Card className="p-4 border-border bg-card">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between text-left"
+              onClick={() => setLanguageExpanded((v) => !v)}
+            >
+              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Language shown to patient
+              </span>
+              {languageExpanded ? (
+                <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
+              )}
+            </button>
+            {languageExpanded && (
+              <p className="text-sm text-foreground mt-3 leading-relaxed">{consent.consentLanguage}</p>
+            )}
+          </Card>
+
+          <div className="space-y-3">
+            {consent.questions.map((q) => (
+              <Card key={q.index} className="p-4 border-border bg-card">
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Q{q.index}
+                  </p>
+                  {q.passed ? (
+                    <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 gap-1 shrink-0">
+                      <CheckCircle2 className="w-3 h-3" />
+                      Pass
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 gap-1 shrink-0">
+                      <XCircle className="w-3 h-3" />
+                      Fail
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-sm text-foreground mb-2">{q.question}</p>
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Answer: </span>
+                  <span className="text-foreground">{q.answer ?? "—"}</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">Retries: {q.retries}</p>
+              </Card>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

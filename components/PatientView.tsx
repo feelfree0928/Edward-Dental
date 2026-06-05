@@ -8,11 +8,38 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
+import {
+  CONSENT_SCREEN_TEXT,
+  evaluateVerificationAnswer,
+  getVerificationCorrection,
+  INTAKE_WELCOME_MESSAGE,
+  VERIFICATION_QUESTIONS,
+  type VerificationQuestionIndex,
+} from "@/lib/consent-verification";
+
+type Phase = "name" | "consent" | "verify" | "intake";
+
+type VerifyMessage = {
+  id: string;
+  role: "patient" | "assistant";
+  content: string;
+};
+
+type QuestionLog = {
+  answer: string;
+  passed: boolean;
+  retries: number;
+};
+
+function createMessage(role: VerifyMessage["role"], content: string): VerifyMessage {
+  return { id: `${role}-${Date.now()}-${Math.random()}`, role, content };
+}
 
 export function PatientView() {
+  const [phase, setPhase] = useState<Phase>("name");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [name, setName] = useState("");
-  const [isNamePrompt, setIsNamePrompt] = useState(true);
+  const [consentShownAt, setConsentShownAt] = useState<string | null>(null);
 
   const createSession = useMutation({
     mutationFn: async (patientName?: string) => {
@@ -26,11 +53,18 @@ export function PatientView() {
     },
     onSuccess: (session) => {
       setSessionId(session.id);
-      setIsNamePrompt(false);
+      setPhase("consent");
     },
   });
 
-  if (isNamePrompt && !sessionId) {
+  const handleReset = () => {
+    setSessionId(null);
+    setName("");
+    setConsentShownAt(null);
+    setPhase("name");
+  };
+
+  if (phase === "name" && !sessionId) {
     return (
       <div className="flex-1 flex items-center justify-center p-4">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-md w-full">
@@ -38,7 +72,7 @@ export function PatientView() {
             <div className="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-6 text-primary">
               <Bot className="w-8 h-8" />
             </div>
-            <h2 className="text-2xl font-serif font-bold text-foreground mb-2">Welcome to Edward's Dental</h2>
+            <h2 className="text-2xl font-serif font-bold text-foreground mb-2">Welcome to Edward&apos;s Dental</h2>
             <p className="text-muted-foreground mb-8">
               Our AI assistant is ready to help prepare for your visit. May we have your name?
             </p>
@@ -48,13 +82,25 @@ export function PatientView() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="text-center text-lg"
-                onKeyDown={(e) => { if (e.key === "Enter") createSession.mutate(name); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") createSession.mutate(name);
+                }}
               />
               <div className="flex flex-col gap-2">
-                <Button size="lg" className="w-full text-lg" onClick={() => createSession.mutate(name)} disabled={createSession.isPending}>
+                <Button
+                  size="lg"
+                  className="w-full text-lg"
+                  onClick={() => createSession.mutate(name)}
+                  disabled={createSession.isPending}
+                >
                   {createSession.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : "Start Consultation"}
                 </Button>
-                <Button variant="ghost" className="w-full text-muted-foreground" onClick={() => createSession.mutate(undefined)} disabled={createSession.isPending}>
+                <Button
+                  variant="ghost"
+                  className="w-full text-muted-foreground"
+                  onClick={() => createSession.mutate(undefined)}
+                  disabled={createSession.isPending}
+                >
                   Continue Anonymously
                 </Button>
               </div>
@@ -65,11 +111,235 @@ export function PatientView() {
     );
   }
 
-  if (sessionId) {
-    return <ChatInterface sessionId={sessionId} onReset={() => { setSessionId(null); setIsNamePrompt(true); }} />;
+  if (phase === "consent" && sessionId) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-4">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-lg w-full">
+          <Card className="p-8 border-border shadow-lg">
+            <h2 className="text-xl font-serif font-bold text-foreground mb-4">Before we begin</h2>
+            <p className="text-muted-foreground text-[15px] leading-relaxed mb-8">{CONSENT_SCREEN_TEXT}</p>
+            <Button
+              size="lg"
+              className="w-full"
+              onClick={() => {
+                setConsentShownAt(new Date().toISOString());
+                setPhase("verify");
+              }}
+            >
+              I understand
+            </Button>
+          </Card>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (phase === "verify" && sessionId && consentShownAt) {
+    return (
+      <VerificationInterface
+        sessionId={sessionId}
+        consentShownAt={consentShownAt}
+        onComplete={() => setPhase("intake")}
+        onReset={handleReset}
+      />
+    );
+  }
+
+  if (phase === "intake" && sessionId) {
+    return <ChatInterface sessionId={sessionId} onReset={handleReset} />;
   }
 
   return null;
+}
+
+function VerificationInterface({
+  sessionId,
+  consentShownAt,
+  onComplete,
+  onReset,
+}: {
+  sessionId: string;
+  consentShownAt: string;
+  onComplete: () => void;
+  onReset: () => void;
+}) {
+  const [currentQ, setCurrentQ] = useState<VerificationQuestionIndex>(1);
+  const [content, setContent] = useState("");
+  const [messages, setMessages] = useState<VerifyMessage[]>(() => [
+    createMessage("assistant", VERIFICATION_QUESTIONS[0]),
+  ]);
+  const [retries, setRetries] = useState({ q1: 0, q2: 0, q3: 0 });
+  const logsRef = useRef<Record<VerificationQuestionIndex, QuestionLog | null>>({
+    1: null,
+    2: null,
+    3: null,
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
+
+  const handleAnswer = async () => {
+    if (!content.trim() || isSubmitting) return;
+
+    const answer = content.trim();
+    setContent("");
+    setMessages((prev) => [...prev, createMessage("patient", answer)]);
+
+    const passed = evaluateVerificationAnswer(currentQ, answer);
+    const retryKey = `q${currentQ}` as "q1" | "q2" | "q3";
+    const newRetries = passed ? retries[retryKey] : retries[retryKey] + 1;
+
+    if (!passed) {
+      setRetries((prev) => ({ ...prev, [retryKey]: prev[retryKey] + 1 }));
+      setMessages((prev) => [...prev, createMessage("assistant", getVerificationCorrection(currentQ))]);
+      return;
+    }
+
+    logsRef.current[currentQ] = { answer, passed: true, retries: newRetries };
+
+    if (currentQ < 3) {
+      const nextQ = (currentQ + 1) as VerificationQuestionIndex;
+      setCurrentQ(nextQ);
+      setMessages((prev) => [...prev, createMessage("assistant", VERIFICATION_QUESTIONS[nextQ - 1])]);
+      return;
+    }
+
+    const intakeStartedAt = new Date().toISOString();
+    setMessages((prev) => [...prev, createMessage("assistant", INTAKE_WELCOME_MESSAGE)]);
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/consent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          consentShownAt,
+          intakeStartedAt,
+          q1Answer: logsRef.current[1]!.answer,
+          q1Passed: logsRef.current[1]!.passed,
+          q1Retries: logsRef.current[1]!.retries,
+          q2Answer: logsRef.current[2]!.answer,
+          q2Passed: logsRef.current[2]!.passed,
+          q2Retries: logsRef.current[2]!.retries,
+          q3Answer: logsRef.current[3]!.answer,
+          q3Passed: logsRef.current[3]!.passed,
+          q3Retries: logsRef.current[3]!.retries,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "Failed to record consent");
+      }
+
+      onComplete();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to record consent");
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full px-4 py-6">
+      <div className="bg-card rounded-2xl shadow-sm border border-border flex-1 flex flex-col overflow-hidden">
+        <div className="p-4 border-b border-border flex items-center justify-between bg-muted/30">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center text-primary-foreground">
+              <Bot className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-foreground">Dr. AI Assistant</h3>
+              <p className="text-xs text-muted-foreground">Verification step {currentQ} of 3</p>
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={onReset}>
+            Cancel
+          </Button>
+        </div>
+
+        <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+          <div className="space-y-6 max-w-3xl mx-auto">
+            <AnimatePresence initial={false}>
+              {messages.map((msg) => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${msg.role === "patient" ? "justify-end" : "justify-start"}`}
+                >
+                  <div className={`flex max-w-[80%] gap-3 ${msg.role === "patient" ? "flex-row-reverse" : "flex-row"}`}>
+                    <div
+                      className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center mt-1 ${
+                        msg.role === "patient"
+                          ? "bg-accent text-accent-foreground"
+                          : "bg-primary text-primary-foreground"
+                      }`}
+                    >
+                      {msg.role === "patient" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                    </div>
+                    <div
+                      className={`p-4 rounded-2xl ${
+                        msg.role === "patient"
+                          ? "bg-accent text-accent-foreground rounded-tr-sm"
+                          : "bg-muted text-foreground rounded-tl-sm border border-border"
+                      }`}
+                    >
+                      <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+            {isSubmitting && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                <div className="flex gap-3">
+                  <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center mt-1">
+                    <Bot className="w-4 h-4" />
+                  </div>
+                  <div className="p-4 rounded-2xl bg-muted border border-border rounded-tl-sm flex items-center gap-1">
+                    <span className="w-2 h-2 bg-primary/40 rounded-full animate-bounce" />
+                    <span className="w-2 h-2 bg-primary/40 rounded-full animate-bounce [animation-delay:0.2s]" />
+                    <span className="w-2 h-2 bg-primary/40 rounded-full animate-bounce [animation-delay:0.4s]" />
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </div>
+        </ScrollArea>
+
+        <div className="p-4 bg-background border-t border-border">
+          {error ? (
+            <p className="text-sm text-destructive text-center mb-3">{error}</p>
+          ) : null}
+          <div className="flex items-center gap-2 max-w-3xl mx-auto">
+            <Input
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleAnswer();
+              }}
+              placeholder="Type your answer..."
+              className="flex-1 rounded-full px-6 py-6 text-[15px]"
+              disabled={isSubmitting}
+            />
+            <Button
+              onClick={() => void handleAnswer()}
+              disabled={!content.trim() || isSubmitting}
+              size="icon"
+              className="h-12 w-12 rounded-full shrink-0"
+            >
+              <Send className="w-5 h-5" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ChatInterface({ sessionId, onReset }: { sessionId: string; onReset: () => void }) {
@@ -96,9 +366,7 @@ function ChatInterface({ sessionId, onReset }: { sessionId: string; onReset: () 
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(
-          typeof data.error === "string" ? data.error : "Failed to send message"
-        );
+        throw new Error(typeof data.error === "string" ? data.error : "Failed to send message");
       }
       return data;
     },
@@ -131,16 +399,22 @@ function ChatInterface({ sessionId, onReset }: { sessionId: string; onReset: () 
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [sessionDetail?.messages]);
 
-  const isCompleted = sessionDetail?.status === "completed" || sessionDetail?.status === "approved";
+  const isCompleted =
+    sessionDetail?.status === "completed" ||
+    sessionDetail?.status === "approved" ||
+    sessionDetail?.status === "summarizing";
 
   if (isLoadingSession) {
-    return <div className="flex-1 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
   }
 
   return (
     <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full px-4 py-6">
       <div className="bg-card rounded-2xl shadow-sm border border-border flex-1 flex flex-col overflow-hidden">
-        {/* Chat Header */}
         <div className="p-4 border-b border-border flex items-center justify-between bg-muted/30">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center text-primary-foreground">
@@ -161,20 +435,36 @@ function ChatInterface({ sessionId, onReset }: { sessionId: string; onReset: () 
           )}
         </div>
 
-        {/* Messages */}
         <ScrollArea className="flex-1 p-4" ref={scrollRef}>
           <div className="space-y-6 max-w-3xl mx-auto">
             {sessionDetail?.messages.length === 0 && (
-              <div className="text-center text-muted-foreground mt-10">Hi! Please tell me about your dental concerns today.</div>
+              <div className="text-center text-muted-foreground mt-10">{INTAKE_WELCOME_MESSAGE}</div>
             )}
             <AnimatePresence initial={false}>
               {sessionDetail?.messages.map((msg: { id: string; role: string; content: string }) => (
-                <motion.div key={msg.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex ${msg.role === "patient" ? "justify-end" : "justify-start"}`}>
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex ${msg.role === "patient" ? "justify-end" : "justify-start"}`}
+                >
                   <div className={`flex max-w-[80%] gap-3 ${msg.role === "patient" ? "flex-row-reverse" : "flex-row"}`}>
-                    <div className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center mt-1 ${msg.role === "patient" ? "bg-accent text-accent-foreground" : "bg-primary text-primary-foreground"}`}>
+                    <div
+                      className={`w-8 h-8 shrink-0 rounded-full flex items-center justify-center mt-1 ${
+                        msg.role === "patient"
+                          ? "bg-accent text-accent-foreground"
+                          : "bg-primary text-primary-foreground"
+                      }`}
+                    >
                       {msg.role === "patient" ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
                     </div>
-                    <div className={`p-4 rounded-2xl ${msg.role === "patient" ? "bg-accent text-accent-foreground rounded-tr-sm" : "bg-muted text-foreground rounded-tl-sm border border-border"}`}>
+                    <div
+                      className={`p-4 rounded-2xl ${
+                        msg.role === "patient"
+                          ? "bg-accent text-accent-foreground rounded-tr-sm"
+                          : "bg-muted text-foreground rounded-tl-sm border border-border"
+                      }`}
+                    >
                       <p className="text-[15px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                     </div>
                   </div>
@@ -184,7 +474,9 @@ function ChatInterface({ sessionId, onReset }: { sessionId: string; onReset: () 
             {sendMessage.isPending && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
                 <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center mt-1"><Bot className="w-4 h-4" /></div>
+                  <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center mt-1">
+                    <Bot className="w-4 h-4" />
+                  </div>
                   <div className="p-4 rounded-2xl bg-muted border border-border rounded-tl-sm flex items-center gap-1">
                     <span className="w-2 h-2 bg-primary/40 rounded-full animate-bounce" />
                     <span className="w-2 h-2 bg-primary/40 rounded-full animate-bounce [animation-delay:0.2s]" />
@@ -196,26 +488,34 @@ function ChatInterface({ sessionId, onReset }: { sessionId: string; onReset: () 
           </div>
         </ScrollArea>
 
-        {/* Input Area */}
         <div className="p-4 bg-background border-t border-border">
           {isCompleted ? (
             <div className="text-center p-4 bg-muted/50 rounded-xl flex flex-col items-center justify-center">
               <CheckCircle2 className="w-8 h-8 text-primary mb-2" />
               <h3 className="font-semibold text-foreground">Consultation Completed</h3>
               <p className="text-sm text-muted-foreground mb-4">Your summary has been sent to the front desk.</p>
-              <Button onClick={onReset} variant="outline">Start New Session</Button>
+              <Button onClick={onReset} variant="outline">
+                Start New Session
+              </Button>
             </div>
           ) : (
             <div className="flex items-center gap-2 max-w-3xl mx-auto">
               <Input
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSend();
+                }}
                 placeholder="Type your message..."
                 className="flex-1 rounded-full px-6 py-6 text-[15px]"
                 disabled={sendMessage.isPending}
               />
-              <Button onClick={handleSend} disabled={!content.trim() || sendMessage.isPending} size="icon" className="h-12 w-12 rounded-full shrink-0">
+              <Button
+                onClick={handleSend}
+                disabled={!content.trim() || sendMessage.isPending}
+                size="icon"
+                className="h-12 w-12 rounded-full shrink-0"
+              >
                 <Send className="w-5 h-5" />
               </Button>
             </div>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { SessionRow } from "@/lib/supabase";
 import {
+  consentLogToApi,
   fetchSessionDetail,
   isSessionReviewReady,
   messageRowToApi,
@@ -41,7 +42,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       throw new Error(error.message);
     }
 
-    const { session, messages, summary } = await fetchSessionDetail(sessionId);
+    const { session, messages, summary, consent } = await fetchSessionDetail(sessionId);
     if (!session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
@@ -50,6 +51,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       ...rowToSessionResponse(session, messages.length),
       messages: messages.map(messageRowToApi),
       summary: summaryRowToApi(summary),
+      consent: consentLogToApi(consent),
     });
   } catch (error) {
     return toErrorResponse(error, "Failed to approve session");

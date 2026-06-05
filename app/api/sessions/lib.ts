@@ -1,6 +1,13 @@
 import type { Anthropic } from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
-import { getSupabaseClient, type SessionRow, type MessageRow, type SummaryRow } from "@/lib/supabase";
+import {
+  getSupabaseClient,
+  type ConsentLogRow,
+  type SessionRow,
+  type MessageRow,
+  type SummaryRow,
+} from "@/lib/supabase";
+import { CONSENT_SCREEN_TEXT, VERIFICATION_QUESTIONS } from "@/lib/consent-verification";
 import { CLAUDE_MODEL, extractSummaryTool, getAnthropicClient, isAnthropicAccessDenied } from "@/lib/anthropic";
 import { extractFallbackSummary, isIntakeFallbackEnabled } from "@/lib/intake-fallback";
 
@@ -82,10 +89,50 @@ export function summaryRowToApi(row: SummaryRow | null) {
   };
 }
 
+export function consentLogToApi(row: ConsentLogRow | null) {
+  if (!row) return null;
+
+  const consentAccepted =
+    row.q1_passed === true &&
+    row.q2_passed === true &&
+    row.q3_passed === true &&
+    row.intake_started_at != null;
+
+  return {
+    consentShownAt: row.consent_shown_at,
+    intakeStartedAt: row.intake_started_at,
+    consentAccepted,
+    consentLanguage: CONSENT_SCREEN_TEXT,
+    questions: [
+      {
+        index: 1 as const,
+        question: VERIFICATION_QUESTIONS[0],
+        answer: row.q1_answer,
+        passed: row.q1_passed,
+        retries: row.q1_retries,
+      },
+      {
+        index: 2 as const,
+        question: VERIFICATION_QUESTIONS[1],
+        answer: row.q2_answer,
+        passed: row.q2_passed,
+        retries: row.q2_retries,
+      },
+      {
+        index: 3 as const,
+        question: VERIFICATION_QUESTIONS[2],
+        answer: row.q3_answer,
+        passed: row.q3_passed,
+        retries: row.q3_retries,
+      },
+    ],
+  };
+}
+
 export async function fetchSessionDetail(sessionId: string) {
   const supabase = resolveSupabaseClient();
 
-  const [sessionRes, messagesRes, summaryRes] = await Promise.all([
+  const [sessionRes, messagesRes, summaryRes, consentRes] = await Promise.all([
     supabase.from("sessions").select("*").eq("id", sessionId).single<SessionRow>(),
     supabase
       .from("messages")
@@ -98,12 +145,18 @@ export async function fetchSessionDetail(sessionId: string) {
       .select("*")
       .eq("session_id", sessionId)
       .maybeSingle<SummaryRow>(),
+    supabase
+      .from("consent_logs")
+      .select("*")
+      .eq("session_id", sessionId)
+      .maybeSingle<ConsentLogRow>(),
   ]);
 
   return {
     session: sessionRes.data,
     messages: messagesRes.data ?? [],
     summary: summaryRes.data,
+    consent: consentRes.data,
   };
 }
 

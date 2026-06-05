@@ -5,7 +5,7 @@ const REQUIRED_SUPABASE_ENV = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"] as c
 export interface SessionRow {
   id: string;
   patient_name: string | null;
-  status: "active" | "summarizing" | "completed" | "approved";
+  status: "pending_consent" | "active" | "summarizing" | "completed" | "approved";
   started_at: string;
   ended_at: string | null;
 }
@@ -15,6 +15,23 @@ export interface MessageRow {
   session_id: string;
   role: "patient" | "assistant";
   content: string;
+  created_at: string;
+}
+
+export interface ConsentLogRow {
+  id: string;
+  session_id: string;
+  consent_shown_at: string;
+  q1_answer: string | null;
+  q1_passed: boolean | null;
+  q1_retries: number;
+  q2_answer: string | null;
+  q2_passed: boolean | null;
+  q2_retries: number;
+  q3_answer: string | null;
+  q3_passed: boolean | null;
+  q3_retries: number;
+  intake_started_at: string | null;
   created_at: string;
 }
 
@@ -74,6 +91,27 @@ export type Database = {
           notes?: string | null;
         };
         Update: Partial<Omit<SummaryRow, "id">>;
+        Relationships: [];
+      };
+      consent_logs: {
+        Row: ConsentLogRow;
+        Insert: {
+          id?: string;
+          session_id: string;
+          consent_shown_at: string;
+          q1_answer?: string | null;
+          q1_passed?: boolean | null;
+          q1_retries?: number;
+          q2_answer?: string | null;
+          q2_passed?: boolean | null;
+          q2_retries?: number;
+          q3_answer?: string | null;
+          q3_passed?: boolean | null;
+          q3_retries?: number;
+          intake_started_at?: string | null;
+          created_at?: string;
+        };
+        Update: Partial<Omit<ConsentLogRow, "id">>;
         Relationships: [];
       };
     };

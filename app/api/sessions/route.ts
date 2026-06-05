@@ -69,7 +69,7 @@ export async function POST(req: Request) {
 
     const { data, error } = await supabase
       .from("sessions")
-      .insert({ patient_name: patientName || null, status: "active" })
+      .insert({ patient_name: patientName || null, status: "pending_consent" })
       .select()
       .single();
 
