@@ -1,16 +1,43 @@
 /**
  * Rule-based intake behavior when Anthropic is unavailable (403, missing key, etc).
- * This keeps local consultations useful for demos and operational continuity.
+ * Mirrors terse, field-driven rules from INTAKE_SYSTEM_PROMPT.
  */
+
+import { INTAKE_FAREWELL_MAX_WORDS, INTAKE_MAX_WORDS, enforceMaxWords } from "@/lib/anthropic";
 
 const DONE_PATTERN = /\b(done|finished|goodbye|that'?s all|no more|nothing else)\b/i;
 const URGENT_PATTERN = /\b(trouble breathing|can't breathe|cannot breathe|swelling in face|uncontrolled bleeding|major trauma)\b/i;
 
+const NO_ALLERGY_PATTERN = /\b(no allergies|no allergy|not allergic|no known allergies|none)\b/i;
+const ALLERGEN_PATTERN = /\b(latex|penicillin|anesthetic|anesthesia|nickel|codeine|sulfa|aspirin)\b/i;
+const EXPOSURE_PATTERN =
+  /\b(exposed|exposure|hives|rash|swell|anaphylaxis|itch|wheez|breath|nausea|vomit|dizzy|faint|throat|when i|reaction is|it causes|i get)\b/i;
+
+const NO_MEDICATION_PATTERN = /\b(no medications|no medication|not taking any|don't take any|do not take any|none)\b/i;
+const MEDICATION_PATTERN =
+  /\b(medication|medicine|taking|prescription|aspirin|ibuprofen|acetaminophen|supplement|daily|mg)\b/i;
+
+const NO_MEDICAL_PATTERN = /\b(no medical|no conditions|no health issues|nothing serious|healthy|none)\b/i;
 const MEDICAL_PATTERN = /\b(medical|condition|diabetes|heart|blood pressure|asthma|surgery|hospital)\b/i;
-const MEDICATION_PATTERN = /\b(medication|medicine|taking|prescription|aspirin|ibuprofen|acetaminophen|supplement)\b/i;
+
+const NO_DENTAL_PATTERN = /\b(no dental|never been|not sure|none)\b/i;
+const DENTAL_HISTORY_PATTERN = /\b(last dental|last visit|dentist|dental|cavity|filling|crown|root canal|cleaning|years ago)\b/i;
+
 const ALLERGY_PATTERN = /\b(allerg|latex|penicillin|anesthetic|reaction|rash)\b/i;
-const DENTAL_HISTORY_PATTERN = /\b(last dental|last visit|dentist|dental|cavity|filling|crown|root canal|cleaning)\b/i;
 const SYMPTOM_PATTERN = /\b(pain|ache|throbbing|sharp|sensitive|swelling|bleeding|fever|jaw|tooth|gum)\b/i;
+const TIMELINE_PATTERN = /\b(start|since|day|week|month|today|yesterday|duration|ago)\b/i;
+const SEVERITY_PATTERN = /\b(scale|0|1|2|3|4|5|6|7|8|9|10|mild|moderate|severe|out of)\b/i;
+const LOCATION_PATTERN = /\b(upper|lower|left|right|front|back|molar|incisor|side)\b/i;
+
+export type TopicStatus = "open" | "partial" | "closed";
+
+export type IntakeTopicState = {
+  allergies: TopicStatus;
+  medications: TopicStatus;
+  medical_history: TopicStatus;
+  chief_complaint: TopicStatus;
+  dental_history: TopicStatus;
+};
 
 function normalize(text: string) {
   return text.toLowerCase().trim();
@@ -35,67 +62,135 @@ function firstSentence(text: string, max = 220) {
   return `${trimmed.slice(0, max)}...`;
 }
 
-function describeLastConcern(lastPatientMessage: string) {
-  const text = normalize(lastPatientMessage);
-  if (includesAny(text, /\b(tooth|molar|incisor|upper|lower|left|right)\b/i)) {
-    return "that tooth issue";
-  }
-  if (includesAny(text, /\b(gum|gums)\b/i)) {
-    return "that gum concern";
-  }
-  if (includesAny(text, /\b(swelling|bleeding)\b/i)) {
-    return "those symptoms";
-  }
-  return "what you shared";
+function extractAllergen(text: string): string {
+  const n = normalize(text);
+  if (/\blatex\b/.test(n)) return "latex";
+  if (/\bpenicillin\b/.test(n)) return "penicillin";
+  if (/\banesthetic|anesthesia\b/.test(n)) return "anesthetic";
+  if (/\bnickel\b/.test(n)) return "nickel";
+  if (/\baspirin\b/.test(n)) return "aspirin";
+  if (/\ballerg/i.test(n)) return "that allergen";
+  return "it";
 }
 
-export function shouldCompleteIntake(patientMessageCount: number, lastPatientMessage: string) {
+export function getIntakeTopicState(patientLines: string[]): IntakeTopicState {
+  const joined = patientLines.join(" ");
+
+  let allergies: TopicStatus = "open";
+  if (patientLines.some((l) => NO_ALLERGY_PATTERN.test(l))) {
+    allergies = "closed";
+  } else if (patientLines.some((l) => ALLERGEN_PATTERN.test(l) || /\ballerg/i.test(l))) {
+    const hasExposure =
+      patientLines.some((l) => EXPOSURE_PATTERN.test(l)) ||
+      (ALLERGEN_PATTERN.test(joined) && EXPOSURE_PATTERN.test(joined));
+    allergies = hasExposure ? "closed" : "partial";
+  }
+
+  let medications: TopicStatus = "open";
+  if (patientLines.some((l) => NO_MEDICATION_PATTERN.test(l) && !ALLERGEN_PATTERN.test(l))) {
+    medications = "closed";
+  } else if (patientLines.some((l) => MEDICATION_PATTERN.test(l))) {
+    medications = "closed";
+  }
+
+  let medical_history: TopicStatus = "open";
+  if (patientLines.some((l) => NO_MEDICAL_PATTERN.test(l))) {
+    medical_history = "closed";
+  } else if (patientLines.some((l) => MEDICAL_PATTERN.test(l))) {
+    medical_history = "closed";
+  }
+
+  let chief_complaint: TopicStatus = "open";
+  if (patientLines.length > 0) {
+    const hasSymptom = patientLines.some((l) => SYMPTOM_PATTERN.test(l));
+    const hasDetail =
+      patientLines.some((l) => TIMELINE_PATTERN.test(l) || SEVERITY_PATTERN.test(l) || LOCATION_PATTERN.test(l));
+    if (hasSymptom && hasDetail) chief_complaint = "closed";
+    else if (hasSymptom || patientLines.length >= 1) chief_complaint = "partial";
+  }
+
+  let dental_history: TopicStatus = "open";
+  if (patientLines.some((l) => NO_DENTAL_PATTERN.test(l) && DENTAL_HISTORY_PATTERN.test(l) === false)) {
+    if (/\b(no|none)\b/i.test(patientLines.join(" ")) && patientLines.length >= 4) {
+      dental_history = "closed";
+    }
+  }
+  if (patientLines.some((l) => DENTAL_HISTORY_PATTERN.test(l))) {
+    dental_history = "closed";
+  }
+
+  return { allergies, medications, medical_history, chief_complaint, dental_history };
+}
+
+export function areHighPriorityTopicsClosed(state: IntakeTopicState): boolean {
+  return (
+    state.allergies === "closed" &&
+    state.medications === "closed" &&
+    state.medical_history === "closed"
+  );
+}
+
+export function shouldCompleteIntake(patientLines: string[], lastPatientMessage: string): boolean {
   const msg = normalize(lastPatientMessage);
   if (DONE_PATTERN.test(msg)) return true;
-  return patientMessageCount >= 10;
+
+  const state = getIntakeTopicState(patientLines);
+  if (!areHighPriorityTopicsClosed(state)) return false;
+
+  return state.chief_complaint === "closed" && state.dental_history === "closed";
 }
 
-export function generateFallbackReply(patientMessageCount: number, lastPatientMessage: string): string {
+function notedQuestion(notation: string, question: string): string {
+  return enforceMaxWords(`Noted: ${notation}. ${question}`, INTAKE_MAX_WORDS);
+}
+
+export function generateFallbackReply(patientLines: string[], lastPatientMessage: string): string {
   const normalized = normalize(lastPatientMessage);
-  const concern = describeLastConcern(lastPatientMessage);
 
   if (includesAny(normalized, URGENT_PATTERN)) {
-    return "Thank you for telling me right away. Because this may be urgent, please seek immediate emergency dental or medical care now. If you can, let me know when these symptoms started so we can document it clearly for the team.";
+    return "Seek emergency care now for breathing trouble, severe swelling, or uncontrolled bleeding.";
   }
 
-  if (patientMessageCount <= 1) {
-    return "Thank you for explaining that so clearly. To help your dentist prepare, where exactly is the problem, when did it start, and how strong is it right now on a 0 to 10 scale?";
+  const state = getIntakeTopicState(patientLines);
+
+  if (state.allergies === "partial") {
+    const allergen = extractAllergen(lastPatientMessage) || extractAllergen(patientLines.join(" "));
+    return notedQuestion(
+      `${allergen} allergy`,
+      `What happens when exposed to ${allergen}?`
+    );
   }
 
-  if (shouldCompleteIntake(patientMessageCount, lastPatientMessage)) {
-    return "";
+  if (state.allergies === "open") {
+    return notedQuestion("your update", "Any medication, latex, or anesthetic allergies?");
   }
 
-  if (includesAny(normalized, /\b(anxious|nervous|scared|afraid)\b/i)) {
-    return "I appreciate you sharing that, and we will make a note so the team can support you comfortably. Have you had any difficult dental experiences before, and is there anything that helps you feel more at ease during treatment?";
+  if (state.medications === "open") {
+    return notedQuestion("allergies recorded", "Any current medications or supplements?");
   }
 
-  if (!includesAny(normalized, MEDICAL_PATTERN) && patientMessageCount >= 2 && patientMessageCount <= 4) {
-    return `Thanks for sharing ${concern}. Do you have any medical conditions, recent surgeries, or health issues your dentist should know about?`;
+  if (state.medical_history === "open") {
+    return notedQuestion("medications recorded", "Any medical conditions or recent surgeries?");
   }
 
-  if (!includesAny(normalized, MEDICATION_PATTERN) && patientMessageCount >= 3 && patientMessageCount <= 6) {
-    return "Understood. Are you currently taking any medicines, including over-the-counter pain relievers or supplements?";
+  if (state.chief_complaint !== "closed") {
+    if (state.chief_complaint === "open" && patientLines.length <= 1) {
+      return notedQuestion("your concern", "Where is the problem and when started?");
+    }
+    return notedQuestion("symptoms noted", "Pain severity zero to ten?");
   }
 
-  if (!includesAny(normalized, ALLERGY_PATTERN) && patientMessageCount >= 4 && patientMessageCount <= 7) {
-    return "Thank you. Do you have any allergies to medications, latex, or local anesthetics, and what reaction do you get?";
+  if (state.dental_history === "open") {
+    return notedQuestion("history noted", "When was your last dental visit?");
   }
 
-  if (!includesAny(normalized, DENTAL_HISTORY_PATTERN) && patientMessageCount >= 5) {
-    return "One more quick question: when was your last dental visit, and have you had similar pain or treatment in this area before?";
-  }
-
-  return "Thank you, that is very helpful. Is there anything else about your symptoms, timing, or comfort concerns that you want your dentist to know before your visit?";
+  return notedQuestion("intake complete", "Anything else for the dentist?");
 }
 
-export const FALLBACK_FAREWELL =
-  "Thank you for sharing all of that information. We have documented your concerns in detail so your dentist can review them before your appointment.";
+export const FALLBACK_FAREWELL = enforceMaxWords(
+  "Thank you — your dentist will review this before your visit.",
+  INTAKE_FAREWELL_MAX_WORDS
+);
 
 export function isIntakeFallbackEnabled(): boolean {
   return process.env.ANTHROPIC_DEV_FALLBACK === "true" || process.env.ANTHROPIC_DEV_FALLBACK === "1";
@@ -128,17 +223,13 @@ function detectUrgencyFlags(lines: string[]) {
 }
 
 function buildMissingInfoNotes(lines: string[]) {
+  const state = getIntakeTopicState(lines);
   const missing: string[] = [];
-  if (!lines.some((line) => SYMPTOM_PATTERN.test(line))) missing.push("Symptom description remains limited");
-  if (!lines.some((line) => /\b(start|since|day|week|month|today|yesterday|duration)\b/i.test(line))) {
-    missing.push("Symptom timeline not clearly documented");
-  }
-  if (!lines.some((line) => /\b(scale|0|1|2|3|4|5|6|7|8|9|10|mild|severe)\b/i.test(line))) {
-    missing.push("Pain severity score not clearly documented");
-  }
-  if (!lines.some((line) => MEDICAL_PATTERN.test(line))) missing.push("Medical history details may be incomplete");
-  if (!lines.some((line) => MEDICATION_PATTERN.test(line))) missing.push("Medication list may be incomplete");
-  if (!lines.some((line) => ALLERGY_PATTERN.test(line))) missing.push("Allergy status may be incomplete");
+  if (state.chief_complaint !== "closed") missing.push("Chief complaint details may be incomplete");
+  if (state.allergies !== "closed") missing.push("Allergy status may be incomplete");
+  if (state.medications !== "closed") missing.push("Medication list may be incomplete");
+  if (state.medical_history !== "closed") missing.push("Medical history details may be incomplete");
+  if (state.dental_history !== "closed") missing.push("Dental history may be incomplete");
   return missing;
 }
 

@@ -3,8 +3,11 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import {
   CLAUDE_MODEL,
   completeIntakeTool,
+  enforceMaxWords,
   formatAnthropicError,
   getAnthropicClient,
+  INTAKE_FAREWELL_MAX_WORDS,
+  INTAKE_MAX_WORDS,
   INTAKE_SYSTEM_PROMPT,
   isAnthropicAccessDenied,
 } from "@/lib/anthropic";
@@ -47,13 +50,15 @@ async function respondWithFallback(
   const patientCount = patientMessages.length;
   const lastPatient = patientMessages[patientCount - 1]?.content ?? "";
 
-  if (shouldCompleteIntake(patientCount, lastPatient)) {
+  const patientLines = patientMessages.map((m) => m.content);
+
+  if (shouldCompleteIntake(patientLines, lastPatient)) {
     const aiRow = await saveAssistantMessage(supabase, sessionId, FALLBACK_FAREWELL);
     await endSessionWithSummary(sessionId);
     return NextResponse.json({ ...messageRowToApi(aiRow), sessionEnded: true, fallback: true });
   }
 
-  const reply = generateFallbackReply(patientCount, lastPatient);
+  const reply = generateFallbackReply(patientLines, lastPatient);
   const aiRow = await saveAssistantMessage(supabase, sessionId, reply);
   return NextResponse.json({ ...messageRowToApi(aiRow), fallback: true });
 }
@@ -126,7 +131,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     try {
       const response = await anthropic.messages.create({
         model: CLAUDE_MODEL,
-        max_tokens: 512,
+        max_tokens: 80,
         system: INTAKE_SYSTEM_PROMPT,
         tools: [completeIntakeTool],
         messages: chatMessages,
@@ -138,7 +143,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
       if (toolUse) {
         const input = toolUse.input as { farewell_message: string };
-        const farewell = input.farewell_message;
+        const farewell = enforceMaxWords(input.farewell_message, INTAKE_FAREWELL_MAX_WORDS);
         const aiRow = await saveAssistantMessage(supabase, sessionId, farewell);
 
         await endSessionWithSummary(sessionId);
@@ -149,7 +154,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const textBlock = response.content.find(
         (b) => b.type === "text"
       ) as Extract<Anthropic.ContentBlock, { type: "text" }> | undefined;
-      const aiText = textBlock?.text ?? "";
+      let aiText = textBlock?.text?.trim() ?? "";
+      const wordCount = aiText.split(/\s+/).filter(Boolean).length;
+      if (wordCount > INTAKE_MAX_WORDS) {
+        console.warn(
+          `Intake reply exceeded ${INTAKE_MAX_WORDS} words (${wordCount}); truncating for session ${sessionId}.`
+        );
+        aiText = enforceMaxWords(aiText, INTAKE_MAX_WORDS);
+      }
       const aiRow = await saveAssistantMessage(supabase, sessionId, aiText);
       return NextResponse.json(messageRowToApi(aiRow));
     } catch (err) {
