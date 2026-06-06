@@ -8,7 +8,14 @@ import {
   type SummaryRow,
 } from "@/lib/supabase";
 import { CONSENT_SCREEN_TEXT, VERIFICATION_QUESTIONS } from "@/lib/consent-verification";
-import { CLAUDE_MODEL, extractSummaryTool, getAnthropicClient, isAnthropicAccessDenied } from "@/lib/anthropic";
+import {
+  CLAUDE_MODEL,
+  extractSummaryTool,
+  getAnthropicClient,
+  isAnthropicAccessDenied,
+  isAnthropicKnownDenied,
+  markAnthropicAccessDenied,
+} from "@/lib/anthropic";
 import { extractFallbackSummary, isIntakeFallbackEnabled } from "@/lib/intake-fallback";
 
 export class ApiError extends Error {
@@ -218,7 +225,7 @@ export async function endSessionWithSummary(sessionId: string): Promise<void> {
     const saveFallbackSummary = () =>
       upsertClinicalSummary(supabase, sessionId, extractFallbackSummary(messages));
 
-    if (isIntakeFallbackEnabled()) {
+    if (isIntakeFallbackEnabled() || isAnthropicKnownDenied()) {
       await saveFallbackSummary();
       return;
     }
@@ -281,7 +288,7 @@ ${transcript}`;
         }
       } catch (err) {
         if (isAnthropicAccessDenied(err)) {
-          console.warn("Anthropic API returned 403; saved fallback clinical summary.");
+          markAnthropicAccessDenied("Anthropic API returned 403; saved fallback clinical summary.");
           await saveFallbackSummary();
           return;
         }

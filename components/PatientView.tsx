@@ -10,7 +10,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import {
   CONSENT_SCREEN_TEXT,
-  evaluateVerificationAnswer,
   getVerificationCorrection,
   INTAKE_WELCOME_MESSAGE,
   VERIFICATION_QUESTIONS,
@@ -174,6 +173,7 @@ function VerificationInterface({
     2: null,
     3: null,
   });
+  const [isVerifying, setIsVerifying] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -183,37 +183,52 @@ function VerificationInterface({
   }, [messages]);
 
   const handleAnswer = async () => {
-    if (!content.trim() || isSubmitting) return;
+    if (!content.trim() || isSubmitting || isVerifying) return;
 
     const answer = content.trim();
     setContent("");
     setMessages((prev) => [...prev, createMessage("patient", answer)]);
-
-    const passed = evaluateVerificationAnswer(currentQ, answer);
-    const retryKey = `q${currentQ}` as "q1" | "q2" | "q3";
-    const newRetries = passed ? retries[retryKey] : retries[retryKey] + 1;
-
-    if (!passed) {
-      setRetries((prev) => ({ ...prev, [retryKey]: prev[retryKey] + 1 }));
-      setMessages((prev) => [...prev, createMessage("assistant", getVerificationCorrection(currentQ))]);
-      return;
-    }
-
-    logsRef.current[currentQ] = { answer, passed: true, retries: newRetries };
-
-    if (currentQ < 3) {
-      const nextQ = (currentQ + 1) as VerificationQuestionIndex;
-      setCurrentQ(nextQ);
-      setMessages((prev) => [...prev, createMessage("assistant", VERIFICATION_QUESTIONS[nextQ - 1])]);
-      return;
-    }
-
-    const intakeStartedAt = new Date().toISOString();
-    setMessages((prev) => [...prev, createMessage("assistant", INTAKE_WELCOME_MESSAGE)]);
-    setIsSubmitting(true);
+    setIsVerifying(true);
     setError(null);
 
+    const retryKey = `q${currentQ}` as "q1" | "q2" | "q3";
+
     try {
+      const verifyRes = await fetch(`/api/sessions/${sessionId}/consent/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionIndex: currentQ, answer }),
+      });
+
+      const verifyData = await verifyRes.json().catch(() => ({}));
+      if (!verifyRes.ok) {
+        throw new Error(
+          typeof verifyData.error === "string" ? verifyData.error : "Failed to verify answer"
+        );
+      }
+
+      const passed = Boolean(verifyData.passed);
+      const newRetries = passed ? retries[retryKey] : retries[retryKey] + 1;
+
+      if (!passed) {
+        setRetries((prev) => ({ ...prev, [retryKey]: prev[retryKey] + 1 }));
+        setMessages((prev) => [...prev, createMessage("assistant", getVerificationCorrection(currentQ))]);
+        return;
+      }
+
+      logsRef.current[currentQ] = { answer, passed: true, retries: newRetries };
+
+      if (currentQ < 3) {
+        const nextQ = (currentQ + 1) as VerificationQuestionIndex;
+        setCurrentQ(nextQ);
+        setMessages((prev) => [...prev, createMessage("assistant", VERIFICATION_QUESTIONS[nextQ - 1])]);
+        return;
+      }
+
+      const intakeStartedAt = new Date().toISOString();
+      setMessages((prev) => [...prev, createMessage("assistant", INTAKE_WELCOME_MESSAGE)]);
+      setIsSubmitting(true);
+
       const res = await fetch(`/api/sessions/${sessionId}/consent`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -239,8 +254,10 @@ function VerificationInterface({
 
       onComplete();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to record consent");
+      setError(err instanceof Error ? err.message : "Failed to verify answer");
       setIsSubmitting(false);
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -295,7 +312,7 @@ function VerificationInterface({
                 </motion.div>
               ))}
             </AnimatePresence>
-            {isSubmitting && (
+            {(isVerifying || isSubmitting) && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
                 <div className="flex gap-3">
                   <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center mt-1">
@@ -325,11 +342,11 @@ function VerificationInterface({
               }}
               placeholder="Type your answer..."
               className="flex-1 rounded-full px-6 py-6 text-[15px]"
-              disabled={isSubmitting}
+              disabled={isSubmitting || isVerifying}
             />
             <Button
               onClick={() => void handleAnswer()}
-              disabled={!content.trim() || isSubmitting}
+              disabled={!content.trim() || isSubmitting || isVerifying}
               size="icon"
               className="h-12 w-12 rounded-full shrink-0"
             >

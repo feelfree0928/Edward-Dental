@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { INTAKE_WELCOME_MESSAGE } from "@/lib/consent-verification";
 import type { SessionRow } from "@/lib/supabase";
 import {
   ApiError,
@@ -83,7 +84,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       throw new Error(updateError?.message ?? "Failed to activate session");
     }
 
-    return NextResponse.json(rowToSessionResponse(updated, 0));
+    const { error: welcomeErr } = await supabase.from("messages").insert({
+      session_id: sessionId,
+      role: "assistant",
+      content: INTAKE_WELCOME_MESSAGE,
+    });
+
+    if (welcomeErr) {
+      throw new Error(welcomeErr.message);
+    }
+
+    return NextResponse.json(rowToSessionResponse(updated, 1));
   } catch (error) {
     return toErrorResponse(error, "Failed to record consent");
   }
