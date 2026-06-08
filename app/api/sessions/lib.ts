@@ -7,16 +7,16 @@ import {
   type MessageRow,
   type SummaryRow,
 } from "@/lib/supabase";
-import { CONSENT_SCREEN_TEXT, VERIFICATION_QUESTIONS } from "@/lib/consent-verification";
+import {
+  CONSENT_AGREEMENT_QUESTION,
+  CONSENT_SCREEN_TEXT,
+} from "@/lib/consent-verification";
 import {
   CLAUDE_MODEL,
   extractSummaryTool,
+  formatAnthropicError,
   getAnthropicClient,
-  isAnthropicAccessDenied,
-  isAnthropicKnownDenied,
-  markAnthropicAccessDenied,
 } from "@/lib/anthropic";
-import { extractFallbackSummary, isIntakeFallbackEnabled } from "@/lib/intake-fallback";
 
 export class ApiError extends Error {
   status: number;
@@ -99,40 +99,50 @@ export function summaryRowToApi(row: SummaryRow | null) {
 export function consentLogToApi(row: ConsentLogRow | null) {
   if (!row) return null;
 
-  const consentAccepted =
-    row.q1_passed === true &&
-    row.q2_passed === true &&
-    row.q3_passed === true &&
-    row.intake_started_at != null;
+  const consentAccepted = row.q1_passed === true && row.intake_started_at != null;
+
+  const questions: Array<{
+    index: number;
+    question: string;
+    answer: string | null;
+    passed: boolean | null;
+    retries: number;
+  }> = [
+    {
+      index: 1,
+      question: CONSENT_AGREEMENT_QUESTION,
+      answer: row.q1_answer,
+      passed: row.q1_passed,
+      retries: row.q1_retries,
+    },
+  ];
+
+  if (row.q2_answer != null || row.q2_passed != null) {
+    questions.push({
+      index: 2,
+      question: "Will your data be sold?",
+      answer: row.q2_answer,
+      passed: row.q2_passed,
+      retries: row.q2_retries,
+    });
+  }
+
+  if (row.q3_answer != null || row.q3_passed != null) {
+    questions.push({
+      index: 3,
+      question: "Can your anonymized data be used to improve dental care for everyone?",
+      answer: row.q3_answer,
+      passed: row.q3_passed,
+      retries: row.q3_retries,
+    });
+  }
 
   return {
     consentShownAt: row.consent_shown_at,
     intakeStartedAt: row.intake_started_at,
     consentAccepted,
     consentLanguage: CONSENT_SCREEN_TEXT,
-    questions: [
-      {
-        index: 1 as const,
-        question: VERIFICATION_QUESTIONS[0],
-        answer: row.q1_answer,
-        passed: row.q1_passed,
-        retries: row.q1_retries,
-      },
-      {
-        index: 2 as const,
-        question: VERIFICATION_QUESTIONS[1],
-        answer: row.q2_answer,
-        passed: row.q2_passed,
-        retries: row.q2_retries,
-      },
-      {
-        index: 3 as const,
-        question: VERIFICATION_QUESTIONS[2],
-        answer: row.q3_answer,
-        passed: row.q3_passed,
-        retries: row.q3_retries,
-      },
-    ],
+    questions,
   };
 }
 
@@ -192,6 +202,22 @@ async function markSessionCompleted(
   await supabase.from("sessions").update({ status: "completed" }).eq("id", sessionId);
 }
 
+async function saveSummaryFailureNote(
+  supabase: ReturnType<typeof resolveSupabaseClient>,
+  sessionId: string,
+  error: unknown
+) {
+  const { message } = formatAnthropicError(error);
+  await upsertClinicalSummary(supabase, sessionId, {
+    chief_complaint: null,
+    medical_history: null,
+    dental_history: null,
+    medications: null,
+    allergies: null,
+    notes: `Summary generation failed: ${message}`,
+  });
+}
+
 export async function endSessionWithSummary(sessionId: string): Promise<void> {
   const supabase = resolveSupabaseClient();
   const endedAt = new Date().toISOString();
@@ -222,11 +248,13 @@ export async function endSessionWithSummary(sessionId: string): Promise<void> {
       return;
     }
 
-    const saveFallbackSummary = () =>
-      upsertClinicalSummary(supabase, sessionId, extractFallbackSummary(messages));
-
-    if (isIntakeFallbackEnabled() || isAnthropicKnownDenied()) {
-      await saveFallbackSummary();
+    const anthropic = getAnthropicClient();
+    if (!anthropic) {
+      await saveSummaryFailureNote(
+        supabase,
+        sessionId,
+        new ApiError("Missing ANTHROPIC_API_KEY. Add it to .env and restart the dev server.", 500)
+      );
       return;
     }
 
@@ -254,11 +282,7 @@ Requirements:
 Conversation transcript:
 ${transcript}`;
 
-    const anthropic = getAnthropicClient();
-    if (!anthropic) {
-      await saveFallbackSummary();
-      return;
-    }
+    let lastError: unknown = new Error("Summary tool was not returned");
 
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -286,28 +310,18 @@ ${transcript}`;
           });
           return;
         }
+
+        lastError = new Error("Summary tool was not returned");
       } catch (err) {
-        if (isAnthropicAccessDenied(err)) {
-          markAnthropicAccessDenied("Anthropic API returned 403; saved fallback clinical summary.");
-          await saveFallbackSummary();
-          return;
-        }
+        lastError = err;
         console.error(`Summary generation attempt ${attempt + 1} failed:`, err);
       }
     }
 
-    await saveFallbackSummary();
+    await saveSummaryFailureNote(supabase, sessionId, lastError);
   } catch (err) {
-    console.error("Summary generation failed; attempting fallback summary:", err);
-    const { data: msgRows } = await supabase
-      .from("messages")
-      .select("role, content")
-      .eq("session_id", sessionId)
-      .order("created_at", { ascending: true });
-    const messages = msgRows ?? [];
-    if (messages.length > 0) {
-      await upsertClinicalSummary(supabase, sessionId, extractFallbackSummary(messages));
-    }
+    console.error("Summary generation failed:", err);
+    await saveSummaryFailureNote(supabase, sessionId, err);
   } finally {
     await markSessionCompleted(supabase, sessionId);
   }

@@ -32,18 +32,17 @@ Then set real values for:
 
 Optional:
 - `ANTHROPIC_MODEL` — if your workspace does not have the default model enabled
-- `ANTHROPIC_DEV_FALLBACK=true` — scripted intake replies when the API key is missing or returns 403
 
 If Supabase env vars are missing, API endpoints return clear setup errors instead of crashing at startup.
 
 ### Anthropic 403 (`Request not allowed`)
 
-If patient chat logs `403 forbidden`, the key is rejected for **all** API calls (not just one model). Common fixes:
+If patient chat returns a 502 with `403 Request not allowed`, the key is rejected for **all** API calls (not just one model). Common fixes:
 
 1. Create a **new API key** in [Anthropic Console](https://console.anthropic.com/settings/keys) (same account that has billing enabled).
 2. In Console → **Settings → Model access**, enable Sonnet (or set `ANTHROPIC_MODEL` to a model you have enabled).
 3. Do not reuse Replit integration secrets locally — they often only work inside Replit.
-4. Until the key works, set `ANTHROPIC_DEV_FALLBACK=true` in `.env` and restart `npm run dev` to use local demo replies.
+4. Restart `pnpm dev` after updating `.env`.
 
 Test your key (no output of the secret):
 

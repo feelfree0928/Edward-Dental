@@ -9,11 +9,12 @@ import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import {
+  CONSENT_AGREEMENT_QUESTION,
+  CONSENT_AGREEMENT_RETRY,
+  CONSENT_DECLINE_MESSAGE,
   CONSENT_SCREEN_TEXT,
-  getVerificationCorrection,
   INTAKE_WELCOME_MESSAGE,
-  VERIFICATION_QUESTIONS,
-  type VerificationQuestionIndex,
+  type ConsentOutcome,
 } from "@/lib/consent-verification";
 
 type Phase = "name" | "consent" | "verify" | "intake";
@@ -22,12 +23,6 @@ type VerifyMessage = {
   id: string;
   role: "patient" | "assistant";
   content: string;
-};
-
-type QuestionLog = {
-  answer: string;
-  passed: boolean;
-  retries: number;
 };
 
 function createMessage(role: VerifyMessage["role"], content: string): VerifyMessage {
@@ -125,7 +120,7 @@ export function PatientView() {
                 setPhase("verify");
               }}
             >
-              I understand
+              Continue
             </Button>
           </Card>
         </motion.div>
@@ -162,19 +157,14 @@ function VerificationInterface({
   onComplete: () => void;
   onReset: () => void;
 }) {
-  const [currentQ, setCurrentQ] = useState<VerificationQuestionIndex>(1);
   const [content, setContent] = useState("");
   const [messages, setMessages] = useState<VerifyMessage[]>(() => [
-    createMessage("assistant", VERIFICATION_QUESTIONS[0]),
+    createMessage("assistant", CONSENT_AGREEMENT_QUESTION),
   ]);
-  const [retries, setRetries] = useState({ q1: 0, q2: 0, q3: 0 });
-  const logsRef = useRef<Record<VerificationQuestionIndex, QuestionLog | null>>({
-    1: null,
-    2: null,
-    3: null,
-  });
+  const [unclearRetries, setUnclearRetries] = useState(0);
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [declined, setDeclined] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -182,8 +172,26 @@ function VerificationInterface({
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  const recordDecline = async (answer: string, retries: number) => {
+    const res = await fetch(`/api/sessions/${sessionId}/consent/decline`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ consentShownAt, answer, retries }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(typeof data.error === "string" ? data.error : "Failed to record consent decline");
+    }
+  };
+
+  const handleDecline = async (answer: string, retries: number) => {
+    setMessages((prev) => [...prev, createMessage("assistant", CONSENT_DECLINE_MESSAGE)]);
+    setDeclined(true);
+    await recordDecline(answer, retries);
+  };
+
   const handleAnswer = async () => {
-    if (!content.trim() || isSubmitting || isVerifying) return;
+    if (!content.trim() || isSubmitting || isVerifying || declined) return;
 
     const answer = content.trim();
     setContent("");
@@ -191,37 +199,43 @@ function VerificationInterface({
     setIsVerifying(true);
     setError(null);
 
-    const retryKey = `q${currentQ}` as "q1" | "q2" | "q3";
-
     try {
       const verifyRes = await fetch(`/api/sessions/${sessionId}/consent/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ questionIndex: currentQ, answer }),
+        body: JSON.stringify({ answer }),
       });
 
-      const verifyData = await verifyRes.json().catch(() => ({}));
+      const verifyData = (await verifyRes.json().catch(() => ({}))) as {
+        outcome?: ConsentOutcome;
+        error?: string;
+      };
+
       if (!verifyRes.ok) {
         throw new Error(
           typeof verifyData.error === "string" ? verifyData.error : "Failed to verify answer"
         );
       }
 
-      const passed = Boolean(verifyData.passed);
-      const newRetries = passed ? retries[retryKey] : retries[retryKey] + 1;
+      const outcome = verifyData.outcome;
 
-      if (!passed) {
-        setRetries((prev) => ({ ...prev, [retryKey]: prev[retryKey] + 1 }));
-        setMessages((prev) => [...prev, createMessage("assistant", getVerificationCorrection(currentQ))]);
+      if (outcome === "no") {
+        await handleDecline(answer, unclearRetries);
         return;
       }
 
-      logsRef.current[currentQ] = { answer, passed: true, retries: newRetries };
+      if (outcome === "unclear") {
+        if (unclearRetries === 0) {
+          setUnclearRetries(1);
+          setMessages((prev) => [...prev, createMessage("assistant", CONSENT_AGREEMENT_RETRY)]);
+          return;
+        }
+        await handleDecline(answer, unclearRetries);
+        return;
+      }
 
-      if (currentQ < 3) {
-        const nextQ = (currentQ + 1) as VerificationQuestionIndex;
-        setCurrentQ(nextQ);
-        setMessages((prev) => [...prev, createMessage("assistant", VERIFICATION_QUESTIONS[nextQ - 1])]);
+      if (outcome !== "yes") {
+        await handleDecline(answer, unclearRetries);
         return;
       }
 
@@ -235,15 +249,9 @@ function VerificationInterface({
         body: JSON.stringify({
           consentShownAt,
           intakeStartedAt,
-          q1Answer: logsRef.current[1]!.answer,
-          q1Passed: logsRef.current[1]!.passed,
-          q1Retries: logsRef.current[1]!.retries,
-          q2Answer: logsRef.current[2]!.answer,
-          q2Passed: logsRef.current[2]!.passed,
-          q2Retries: logsRef.current[2]!.retries,
-          q3Answer: logsRef.current[3]!.answer,
-          q3Passed: logsRef.current[3]!.passed,
-          q3Retries: logsRef.current[3]!.retries,
+          answer,
+          passed: true,
+          retries: unclearRetries,
         }),
       });
 
@@ -271,7 +279,7 @@ function VerificationInterface({
             </div>
             <div>
               <h3 className="font-semibold text-foreground">Dr. AI Assistant</h3>
-              <p className="text-xs text-muted-foreground">Verification step {currentQ} of 3</p>
+              <p className="text-xs text-muted-foreground">Consent</p>
             </div>
           </div>
           <Button variant="ghost" size="sm" onClick={onReset}>
@@ -333,26 +341,34 @@ function VerificationInterface({
           {error ? (
             <p className="text-sm text-destructive text-center mb-3">{error}</p>
           ) : null}
-          <div className="flex items-center gap-2 max-w-3xl mx-auto">
-            <Input
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void handleAnswer();
-              }}
-              placeholder="Type your answer..."
-              className="flex-1 rounded-full px-6 py-6 text-[15px]"
-              disabled={isSubmitting || isVerifying}
-            />
-            <Button
-              onClick={() => void handleAnswer()}
-              disabled={!content.trim() || isSubmitting || isVerifying}
-              size="icon"
-              className="h-12 w-12 rounded-full shrink-0"
-            >
-              <Send className="w-5 h-5" />
-            </Button>
-          </div>
+          {declined ? (
+            <div className="text-center p-4 bg-muted/50 rounded-xl flex flex-col items-center justify-center max-w-3xl mx-auto">
+              <Button onClick={onReset} variant="outline">
+                Start New Session
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 max-w-3xl mx-auto">
+              <Input
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleAnswer();
+                }}
+                placeholder="Type your answer..."
+                className="flex-1 rounded-full px-6 py-6 text-[15px]"
+                disabled={isSubmitting || isVerifying}
+              />
+              <Button
+                onClick={() => void handleAnswer()}
+                disabled={!content.trim() || isSubmitting || isVerifying}
+                size="icon"
+                className="h-12 w-12 rounded-full shrink-0"
+              >
+                <Send className="w-5 h-5" />
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>

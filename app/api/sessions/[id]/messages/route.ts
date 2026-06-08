@@ -6,19 +6,11 @@ import {
   enforceMaxWords,
   formatAnthropicError,
   getAnthropicClient,
+  INTAKE_DEFAULT_FAREWELL,
   INTAKE_FAREWELL_MAX_WORDS,
   INTAKE_MAX_WORDS,
   INTAKE_SYSTEM_PROMPT,
-  isAnthropicAccessDenied,
-  isAnthropicKnownDenied,
-  markAnthropicAccessDenied,
 } from "@/lib/anthropic";
-import {
-  FALLBACK_FAREWELL,
-  generateFallbackReply,
-  isIntakeFallbackEnabled,
-  shouldCompleteIntake,
-} from "@/lib/intake-fallback";
 import {
   ApiError,
   endSessionWithSummary,
@@ -42,29 +34,6 @@ async function saveAssistantMessage(
     throw new Error("Failed to save AI response");
   }
   return aiRow;
-}
-
-async function respondWithFallback(
-  supabase: ReturnType<typeof resolveSupabaseClient>,
-  sessionId: string,
-  msgRows: { role: string; content: string }[]
-) {
-  const patientMessages = msgRows.filter((m) => m.role === "patient");
-  const lastPatient = patientMessages[patientMessages.length - 1]?.content ?? "";
-  const lastAssistant =
-    [...msgRows].reverse().find((m) => m.role === "assistant")?.content ?? "";
-
-  const patientLines = patientMessages.map((m) => m.content);
-
-  if (shouldCompleteIntake(patientLines, lastPatient, lastAssistant)) {
-    const aiRow = await saveAssistantMessage(supabase, sessionId, FALLBACK_FAREWELL);
-    await endSessionWithSummary(sessionId);
-    return NextResponse.json({ ...messageRowToApi(aiRow), sessionEnded: true, fallback: true });
-  }
-
-  const reply = generateFallbackReply(patientLines, lastPatient, lastAssistant);
-  const aiRow = await saveAssistantMessage(supabase, sessionId, reply);
-  return NextResponse.json({ ...messageRowToApi(aiRow), fallback: true });
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -112,7 +81,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     const allMessages = msgRows ?? [];
-    const patientMessages = allMessages.filter((m) => m.role === "patient");
     const chatMessages = allMessages.map((m) => ({
       role: m.role === "patient" ? ("user" as const) : ("assistant" as const),
       content: m.content as string,
@@ -120,17 +88,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     const anthropic = getAnthropicClient();
     if (!anthropic) {
-      if (isIntakeFallbackEnabled()) {
-        return respondWithFallback(supabase, sessionId, allMessages);
-      }
       throw new ApiError(
-        "Missing ANTHROPIC_API_KEY. Add it to .env or set ANTHROPIC_DEV_FALLBACK=true for local demo mode.",
+        "Missing ANTHROPIC_API_KEY. Add it to .env and restart the dev server.",
         500
       );
-    }
-
-    if (isIntakeFallbackEnabled() || isAnthropicKnownDenied()) {
-      return respondWithFallback(supabase, sessionId, allMessages);
     }
 
     try {
@@ -147,8 +108,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ) as Extract<Anthropic.ContentBlock, { type: "tool_use" }> | undefined;
 
       if (toolUse) {
-        const input = toolUse.input as { farewell_message: string };
-        const farewell = enforceMaxWords(input.farewell_message, INTAKE_FAREWELL_MAX_WORDS);
+        const input = toolUse.input as { farewell_message?: string };
+        const rawFarewell =
+          typeof input.farewell_message === "string" ? input.farewell_message : "";
+        const farewell =
+          enforceMaxWords(rawFarewell, INTAKE_FAREWELL_MAX_WORDS) || INTAKE_DEFAULT_FAREWELL;
         const aiRow = await saveAssistantMessage(supabase, sessionId, farewell);
 
         await endSessionWithSummary(sessionId);
@@ -170,13 +134,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const aiRow = await saveAssistantMessage(supabase, sessionId, aiText);
       return NextResponse.json(messageRowToApi(aiRow));
     } catch (err) {
-      if (isAnthropicAccessDenied(err)) {
-        markAnthropicAccessDenied(
-          "Anthropic API returned 403; using local intake fallback. Fix ANTHROPIC_API_KEY or set ANTHROPIC_DEV_FALLBACK=true."
-        );
-        return respondWithFallback(supabase, sessionId, allMessages);
-      }
-
       console.error("Claude API error:", err);
 
       const { status, message } = formatAnthropicError(err);

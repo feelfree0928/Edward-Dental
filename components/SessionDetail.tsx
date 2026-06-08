@@ -170,11 +170,16 @@ function ConsentAuditPanel({ consent }: { consent: ConsentAudit | null }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="font-semibold text-foreground">Consent &amp; Verification</h3>
+        <h3 className="font-semibold text-foreground">Consent</h3>
         {consent?.consentAccepted ? (
           <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 gap-1.5 py-1">
             <CheckCircle2 className="w-3 h-3" />
             Consent Accepted
+          </Badge>
+        ) : consent ? (
+          <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 gap-1.5 py-1">
+            <XCircle className="w-3 h-3" />
+            Consent Declined
           </Badge>
         ) : (
           <Badge variant="outline" className="bg-muted text-muted-foreground border-border gap-1.5 py-1">
@@ -227,17 +232,17 @@ function ConsentAuditPanel({ consent }: { consent: ConsentAudit | null }) {
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Q{q.index}
                   </p>
-                  {q.passed ? (
+                  {q.passed === true ? (
                     <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 gap-1 shrink-0">
                       <CheckCircle2 className="w-3 h-3" />
                       Pass
                     </Badge>
-                  ) : (
+                  ) : q.passed === false ? (
                     <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 gap-1 shrink-0">
                       <XCircle className="w-3 h-3" />
                       Fail
                     </Badge>
-                  )}
+                  ) : null}
                 </div>
                 <p className="text-sm text-foreground mb-2">{q.question}</p>
                 <div className="text-sm">

@@ -5,20 +5,6 @@ export const CLAUDE_MODEL =
   process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-5-20250929";
 
 let cachedClient: Anthropic | null = null;
-let anthropicAccessBlocked = false;
-
-export function isAnthropicKnownDenied(): boolean {
-  return anthropicAccessBlocked;
-}
-
-export function markAnthropicAccessDenied(message?: string): void {
-  if (anthropicAccessBlocked) return;
-  anthropicAccessBlocked = true;
-  console.warn(
-    message ??
-      "Anthropic API access denied (403). Using local fallback for the rest of this server session."
-  );
-}
 
 export function getAnthropicClient(): Anthropic | null {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
@@ -36,10 +22,6 @@ export function getAnthropicHttpStatus(error: unknown): number {
   return 500;
 }
 
-export function isAnthropicAccessDenied(error: unknown): boolean {
-  return getAnthropicHttpStatus(error) === 403;
-}
-
 export function formatAnthropicError(error: unknown): { message: string; status: number } {
   const status = getAnthropicHttpStatus(error);
 
@@ -55,7 +37,7 @@ export function formatAnthropicError(error: unknown): { message: string; status:
     return {
       status: 502,
       message:
-        "Anthropic rejected this API key (403 Request not allowed). Use a key from https://console.anthropic.com (not a Replit-only secret), enable billing/model access for your workspace, and ensure your region allows the API. For local demos without Claude, set ANTHROPIC_DEV_FALLBACK=true in .env.",
+        "Anthropic rejected this API key (403 Request not allowed). Create a new key at https://console.anthropic.com/settings/keys, enable billing and model access for your workspace, and ensure your region allows the API.",
     };
   }
 
@@ -78,9 +60,11 @@ export function formatAnthropicError(error: unknown): { message: string; status:
 
 export const INTAKE_MAX_WORDS = 12;
 export const INTAKE_FAREWELL_MAX_WORDS = 25;
+export const INTAKE_DEFAULT_FAREWELL =
+  "Thank you — your dentist will review this before your visit.";
 
-export function enforceMaxWords(text: string, maxWords: number): string {
-  const trimmed = text.trim();
+export function enforceMaxWords(text: string | null | undefined, maxWords: number): string {
+  const trimmed = (text ?? "").trim();
   if (!trimmed) return trimmed;
   const words = trimmed.split(/\s+/).filter(Boolean);
   if (words.length <= maxWords) return trimmed;

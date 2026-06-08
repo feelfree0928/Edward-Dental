@@ -1,18 +1,15 @@
 import { NextResponse } from "next/server";
-import { INTAKE_WELCOME_MESSAGE } from "@/lib/consent-verification";
 import type { SessionRow } from "@/lib/supabase";
 import {
   ApiError,
   resolveSupabaseClient,
   rowToSessionResponse,
   toErrorResponse,
-} from "../../lib";
+} from "../../../lib";
 
-type ConsentPayload = {
+type DeclinePayload = {
   consentShownAt: string;
-  intakeStartedAt: string;
   answer: string;
-  passed: boolean;
   retries: number;
 };
 
@@ -33,61 +30,48 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     if (session.status !== "pending_consent") {
       return NextResponse.json(
-        { error: "Consent has already been recorded for this session." },
+        { error: "Consent is not pending for this session." },
         { status: 409 }
       );
     }
 
-    const body = (await req.json()) as ConsentPayload;
+    const body = (await req.json()) as DeclinePayload;
 
-    if (!body.consentShownAt || !body.intakeStartedAt) {
-      throw new ApiError("consentShownAt and intakeStartedAt are required", 400);
+    if (!body.consentShownAt) {
+      throw new ApiError("consentShownAt is required", 400);
     }
 
     if (!body.answer?.trim()) {
       throw new ApiError("answer is required", 400);
     }
 
-    if (!body.passed) {
-      throw new ApiError("Consent must be accepted before starting intake", 400);
-    }
-
     const { error: logError } = await supabase.from("consent_logs").upsert({
       session_id: sessionId,
       consent_shown_at: body.consentShownAt,
       q1_answer: body.answer.trim(),
-      q1_passed: true,
+      q1_passed: false,
       q1_retries: body.retries ?? 0,
-      intake_started_at: body.intakeStartedAt,
+      intake_started_at: null,
     });
 
     if (logError) {
       throw new Error(logError.message);
     }
 
+    const endedAt = new Date().toISOString();
     const { data: updated, error: updateError } = await supabase
       .from("sessions")
-      .update({ status: "active" })
+      .update({ status: "completed", ended_at: endedAt })
       .eq("id", sessionId)
       .select()
       .single<SessionRow>();
 
     if (updateError || !updated) {
-      throw new Error(updateError?.message ?? "Failed to activate session");
+      throw new Error(updateError?.message ?? "Failed to complete session");
     }
 
-    const { error: welcomeErr } = await supabase.from("messages").insert({
-      session_id: sessionId,
-      role: "assistant",
-      content: INTAKE_WELCOME_MESSAGE,
-    });
-
-    if (welcomeErr) {
-      throw new Error(welcomeErr.message);
-    }
-
-    return NextResponse.json(rowToSessionResponse(updated, 1));
+    return NextResponse.json(rowToSessionResponse(updated, 0));
   } catch (error) {
-    return toErrorResponse(error, "Failed to record consent");
+    return toErrorResponse(error, "Failed to record consent decline");
   }
 }

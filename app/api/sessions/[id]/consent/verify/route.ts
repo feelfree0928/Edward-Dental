@@ -2,46 +2,46 @@ import { NextResponse } from "next/server";
 import type { SessionRow } from "@/lib/supabase";
 import {
   CLAUDE_MODEL,
+  formatAnthropicError,
   getAnthropicClient,
-  isAnthropicAccessDenied,
-  isAnthropicKnownDenied,
-  markAnthropicAccessDenied,
 } from "@/lib/anthropic";
 import {
-  buildConsentEvaluationPrompt,
-  evaluateVerificationAnswer,
-  parseYesNoOnly,
-  type VerificationQuestionIndex,
+  buildConsentAgreementPrompt,
+  parseConsentOutcome,
+  type ConsentOutcome,
 } from "@/lib/consent-verification";
-import { isIntakeFallbackEnabled } from "@/lib/intake-fallback";
 import { ApiError, resolveSupabaseClient, toErrorResponse } from "../../../lib";
 
 type VerifyPayload = {
-  questionIndex: VerificationQuestionIndex;
   answer: string;
 };
 
-function isValidQuestionIndex(value: unknown): value is VerificationQuestionIndex {
-  return value === 1 || value === 2 || value === 3;
-}
-
-async function evaluateWithClaude(questionIndex: VerificationQuestionIndex, answer: string): Promise<boolean> {
+async function evaluateAgreementWithClaude(answer: string): Promise<ConsentOutcome> {
   const anthropic = getAnthropicClient();
   if (!anthropic) {
-    throw new ApiError("Anthropic client unavailable", 503);
+    throw new ApiError(
+      "Missing ANTHROPIC_API_KEY. Add it to .env and restart the dev server.",
+      500
+    );
   }
 
-  const prompt = buildConsentEvaluationPrompt(questionIndex, answer);
+  const prompt = buildConsentAgreementPrompt(answer);
 
-  const response = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 8,
-    messages: [{ role: "user", content: prompt }],
-  });
+  try {
+    const response = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 8,
+      messages: [{ role: "user", content: prompt }],
+    });
 
-  const textBlock = response.content.find((block) => block.type === "text");
-  const text = textBlock && textBlock.type === "text" ? textBlock.text : "";
-  return parseYesNoOnly(text);
+    const textBlock = response.content.find((block) => block.type === "text");
+    const text = textBlock && textBlock.type === "text" ? textBlock.text : "";
+    return parseConsentOutcome(text);
+  } catch (err) {
+    console.error("Consent verify Claude API error:", err);
+    const { status, message } = formatAnthropicError(err);
+    throw new ApiError(message, status >= 400 && status < 600 ? status : 502);
+  }
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -68,39 +68,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     const body = (await req.json()) as VerifyPayload;
 
-    if (!isValidQuestionIndex(body.questionIndex)) {
-      throw new ApiError("questionIndex must be 1, 2, or 3", 400);
-    }
-
     if (!body.answer?.trim()) {
       throw new ApiError("answer is required", 400);
     }
 
-    const trimmedAnswer = body.answer.trim();
-    let passed = false;
-    let usedFallback = false;
+    const outcome = await evaluateAgreementWithClaude(body.answer.trim());
 
-    if (isIntakeFallbackEnabled() || isAnthropicKnownDenied()) {
-      passed = evaluateVerificationAnswer(body.questionIndex, trimmedAnswer);
-      usedFallback = true;
-    } else {
-      try {
-        passed = await evaluateWithClaude(body.questionIndex, trimmedAnswer);
-      } catch (err) {
-        if (isAnthropicAccessDenied(err)) {
-          markAnthropicAccessDenied("Anthropic API returned 403; consent verify using regex fallback.");
-          passed = evaluateVerificationAnswer(body.questionIndex, trimmedAnswer);
-          usedFallback = true;
-        } else if (err instanceof ApiError && err.status === 503) {
-          passed = evaluateVerificationAnswer(body.questionIndex, trimmedAnswer);
-          usedFallback = true;
-        } else {
-          throw err;
-        }
-      }
-    }
-
-    return NextResponse.json({ passed, usedFallback });
+    return NextResponse.json({ outcome });
   } catch (error) {
     return toErrorResponse(error, "Failed to verify consent answer");
   }
