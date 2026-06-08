@@ -3,13 +3,15 @@ import type { Anthropic } from "@anthropic-ai/sdk";
 import {
   CLAUDE_MODEL,
   completeIntakeTool,
+  buildIntakeSystemPrompt,
   enforceMaxWords,
   formatAnthropicError,
   getAnthropicClient,
+  getIntakeReplyWordLimit,
   INTAKE_DEFAULT_FAREWELL,
   INTAKE_FAREWELL_MAX_WORDS,
-  INTAKE_MAX_WORDS,
-  INTAKE_SYSTEM_PROMPT,
+  INTAKE_REPEAT_HINT,
+  isRepeatedPatientMessage,
 } from "@/lib/anthropic";
 import {
   ApiError,
@@ -95,10 +97,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     try {
+      const systemPrompt = buildIntakeSystemPrompt(
+        isRepeatedPatientMessage(allMessages) ? INTAKE_REPEAT_HINT : undefined
+      );
+
       const response = await anthropic.messages.create({
         model: CLAUDE_MODEL,
-        max_tokens: 80,
-        system: INTAKE_SYSTEM_PROMPT,
+        max_tokens: 120,
+        system: systemPrompt,
         tools: [completeIntakeTool],
         messages: chatMessages,
       });
@@ -124,12 +130,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         (b) => b.type === "text"
       ) as Extract<Anthropic.ContentBlock, { type: "text" }> | undefined;
       let aiText = textBlock?.text?.trim() ?? "";
+      const wordLimit = getIntakeReplyWordLimit(aiText);
       const wordCount = aiText.split(/\s+/).filter(Boolean).length;
-      if (wordCount > INTAKE_MAX_WORDS) {
+      if (wordCount > wordLimit) {
         console.warn(
-          `Intake reply exceeded ${INTAKE_MAX_WORDS} words (${wordCount}); truncating for session ${sessionId}.`
+          `Intake reply exceeded ${wordLimit} words (${wordCount}); truncating for session ${sessionId}.`
         );
-        aiText = enforceMaxWords(aiText, INTAKE_MAX_WORDS);
+        aiText = enforceMaxWords(aiText, wordLimit);
       }
       const aiRow = await saveAssistantMessage(supabase, sessionId, aiText);
       return NextResponse.json(messageRowToApi(aiRow));
