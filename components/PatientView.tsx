@@ -11,6 +11,7 @@ import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import {
   CONSENT_AGREEMENT_QUESTION,
   CONSENT_AGREEMENT_RETRY,
+  CONSENT_CLARIFICATION_MESSAGE,
   CONSENT_DECLINE_MESSAGE,
   CONSENT_SCREEN_TEXT,
   INTAKE_WELCOME_MESSAGE,
@@ -161,7 +162,7 @@ function VerificationInterface({
   const [messages, setMessages] = useState<VerifyMessage[]>(() => [
     createMessage("assistant", CONSENT_AGREEMENT_QUESTION),
   ]);
-  const [unclearRetries, setUnclearRetries] = useState(0);
+  const [vagueRetries, setVagueRetries] = useState(0);
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [declined, setDeclined] = useState(false);
@@ -220,22 +221,27 @@ function VerificationInterface({
       const outcome = verifyData.outcome;
 
       if (outcome === "no") {
-        await handleDecline(answer, unclearRetries);
+        await handleDecline(answer, vagueRetries);
+        return;
+      }
+
+      if (outcome === "question") {
+        setMessages((prev) => [...prev, createMessage("assistant", CONSENT_CLARIFICATION_MESSAGE)]);
         return;
       }
 
       if (outcome === "unclear") {
-        if (unclearRetries === 0) {
-          setUnclearRetries(1);
+        if (vagueRetries === 0) {
+          setVagueRetries(1);
           setMessages((prev) => [...prev, createMessage("assistant", CONSENT_AGREEMENT_RETRY)]);
           return;
         }
-        await handleDecline(answer, unclearRetries);
+        await handleDecline(answer, vagueRetries);
         return;
       }
 
       if (outcome !== "yes") {
-        await handleDecline(answer, unclearRetries);
+        await handleDecline(answer, vagueRetries);
         return;
       }
 
@@ -251,7 +257,7 @@ function VerificationInterface({
           intakeStartedAt,
           answer,
           passed: true,
-          retries: unclearRetries,
+          retries: vagueRetries,
         }),
       });
 
