@@ -174,12 +174,12 @@ function ConsentAuditPanel({ consent }: { consent: ConsentAudit | null }) {
         {consent?.consentAccepted ? (
           <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 gap-1.5 py-1">
             <CheckCircle2 className="w-3 h-3" />
-            Consent Accepted
+            AI Intake Accepted
           </Badge>
         ) : consent ? (
           <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 gap-1.5 py-1">
             <XCircle className="w-3 h-3" />
-            Consent Declined
+            AI Intake Declined
           </Badge>
         ) : (
           <Badge variant="outline" className="bg-muted text-muted-foreground border-border gap-1.5 py-1">

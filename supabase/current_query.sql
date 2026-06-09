@@ -80,11 +80,11 @@ create table public.consent_logs (
   created_at        timestamptz not null default now()
 );
 
-comment on table  public.consent_logs                      is 'Audit log for consent disclosure and agreement before clinical intake.';
-comment on column public.consent_logs.consent_shown_at     is 'When the patient was shown the consent disclosure.';
-comment on column public.consent_logs.q1_answer            is 'Patient answer to the agreement question (Do you agree?).';
-comment on column public.consent_logs.q1_passed            is 'Whether the patient agreed to continue.';
-comment on column public.consent_logs.intake_started_at    is 'When the patient agreed and clinical intake began.';
+comment on table  public.consent_logs                      is 'Audit log for two-screen AI disclosure and opt-in before clinical intake.';
+comment on column public.consent_logs.consent_shown_at     is 'When the patient finished both disclosure screens before the opt-in question.';
+comment on column public.consent_logs.q1_answer            is 'Patient answer to "Do you want to use AI for intake?"';
+comment on column public.consent_logs.q1_passed            is 'Whether the patient opted in to AI intake.';
+comment on column public.consent_logs.intake_started_at    is 'When the patient opted in and clinical intake began.';
 
 create index idx_consent_logs_session_id on public.consent_logs (session_id);
 

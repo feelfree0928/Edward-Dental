@@ -8,8 +8,8 @@ import {
   type SummaryRow,
 } from "@/lib/supabase";
 import {
-  CONSENT_AGREEMENT_QUESTION,
-  CONSENT_SCREEN_TEXT,
+  CONSENT_FULL_DISCLOSURE,
+  CONSENT_OPT_IN_QUESTION,
 } from "@/lib/consent-verification";
 import {
   CLAUDE_MODEL,
@@ -110,7 +110,7 @@ export function consentLogToApi(row: ConsentLogRow | null) {
   }> = [
     {
       index: 1,
-      question: CONSENT_AGREEMENT_QUESTION,
+      question: CONSENT_OPT_IN_QUESTION,
       answer: row.q1_answer,
       passed: row.q1_passed,
       retries: row.q1_retries,
@@ -141,7 +141,7 @@ export function consentLogToApi(row: ConsentLogRow | null) {
     consentShownAt: row.consent_shown_at,
     intakeStartedAt: row.intake_started_at,
     consentAccepted,
-    consentLanguage: CONSENT_SCREEN_TEXT,
+    consentLanguage: CONSENT_FULL_DISCLOSURE,
     questions,
   };
 }

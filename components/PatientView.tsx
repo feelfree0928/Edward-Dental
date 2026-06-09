@@ -9,16 +9,17 @@ import { Card } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useQueryClient, useQuery, useMutation } from "@tanstack/react-query";
 import {
-  CONSENT_AGREEMENT_QUESTION,
   CONSENT_AGREEMENT_RETRY,
   CONSENT_CLARIFICATION_MESSAGE,
   CONSENT_DECLINE_MESSAGE,
-  CONSENT_SCREEN_TEXT,
+  CONSENT_INTRO_TEXT,
+  CONSENT_OPT_IN_QUESTION,
+  CONSENT_REVIEW_TEXT,
   INTAKE_WELCOME_MESSAGE,
   type ConsentOutcome,
 } from "@/lib/consent-verification";
 
-type Phase = "name" | "consent" | "verify" | "intake";
+type Phase = "name" | "consentIntro" | "consentReview" | "verify" | "intake";
 
 type VerifyMessage = {
   id: string;
@@ -48,7 +49,7 @@ export function PatientView() {
     },
     onSuccess: (session) => {
       setSessionId(session.id);
-      setPhase("consent");
+      setPhase("consentIntro");
     },
   });
 
@@ -106,13 +107,29 @@ export function PatientView() {
     );
   }
 
-  if (phase === "consent" && sessionId) {
+  if (phase === "consentIntro" && sessionId) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-4">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-lg w-full">
+          <Card className="p-8 border-border shadow-lg">
+            <h2 className="text-xl font-serif font-bold text-foreground mb-4">AI-assisted intake</h2>
+            <p className="text-muted-foreground text-[15px] leading-relaxed mb-8">{CONSENT_INTRO_TEXT}</p>
+            <Button size="lg" className="w-full" onClick={() => setPhase("consentReview")}>
+              Continue
+            </Button>
+          </Card>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (phase === "consentReview" && sessionId) {
     return (
       <div className="flex-1 flex items-center justify-center p-4">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-lg w-full">
           <Card className="p-8 border-border shadow-lg">
             <h2 className="text-xl font-serif font-bold text-foreground mb-4">Before we begin</h2>
-            <p className="text-muted-foreground text-[15px] leading-relaxed mb-8">{CONSENT_SCREEN_TEXT}</p>
+            <p className="text-muted-foreground text-[15px] leading-relaxed mb-8">{CONSENT_REVIEW_TEXT}</p>
             <Button
               size="lg"
               className="w-full"
@@ -160,7 +177,7 @@ function VerificationInterface({
 }) {
   const [content, setContent] = useState("");
   const [messages, setMessages] = useState<VerifyMessage[]>(() => [
-    createMessage("assistant", CONSENT_AGREEMENT_QUESTION),
+    createMessage("assistant", CONSENT_OPT_IN_QUESTION),
   ]);
   const [vagueRetries, setVagueRetries] = useState(0);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -186,9 +203,16 @@ function VerificationInterface({
   };
 
   const handleDecline = async (answer: string, retries: number) => {
+    setIsVerifying(false);
+    setIsSubmitting(false);
     setMessages((prev) => [...prev, createMessage("assistant", CONSENT_DECLINE_MESSAGE)]);
     setDeclined(true);
-    await recordDecline(answer, retries);
+    try {
+      await recordDecline(answer, retries);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to record consent decline");
+      setDeclined(false);
+    }
   };
 
   const handleAnswer = async () => {
@@ -285,7 +309,7 @@ function VerificationInterface({
             </div>
             <div>
               <h3 className="font-semibold text-foreground">Dr. AI Assistant</h3>
-              <p className="text-xs text-muted-foreground">Consent</p>
+              <p className="text-xs text-muted-foreground">AI intake opt-in</p>
             </div>
           </div>
           <Button variant="ghost" size="sm" onClick={onReset}>
@@ -326,7 +350,7 @@ function VerificationInterface({
                 </motion.div>
               ))}
             </AnimatePresence>
-            {(isVerifying || isSubmitting) && (
+            {(isVerifying || isSubmitting) && !declined && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
                 <div className="flex gap-3">
                   <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center mt-1">
