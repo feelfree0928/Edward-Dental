@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { INTAKE_CLOSING_QUESTION } from "@/lib/consent-verification";
 
 /** Override in .env if your workspace does not have Sonnet 4.6 enabled. */
 export const CLAUDE_MODEL =
@@ -158,14 +159,16 @@ Examples:
 Allergy rules: "no X allergies" and "I don't have X allergy" mean no allergy — never treat as a positive finding or ask exposure follow-up. Never re-ask allergy screening after a clear denial.
 
 End intake:
-- Call complete_intake only after allergies, medications, and medical history are closed, plus chief complaint and dental history.
-- Also call complete_intake if the patient says they are done.
+- After allergies, medications, medical history, chief complaint, and dental history are each closed, ask exactly once: "${INTAKE_CLOSING_QUESTION}"
+- Do NOT call complete_intake until you have asked that closing question and the patient confirms there is nothing else to add (for example: no, nope, none, that's all, I'm done, nothing else).
+- If the patient adds new clinical information in response to the closing question, record it and continue intake — do not complete yet.
+- If the patient says they are done before you have asked the closing question, ask the closing question first instead of completing.
 - Farewell may be up to 25 words, one sentence.`;
 
 export const completeIntakeTool: Anthropic.Tool = {
   name: "complete_intake",
   description:
-    "Call only after allergies, medications, medical history, chief complaint, and dental history are each closed (answered or explicitly none). Use a single short farewell sentence.",
+    "Call only after all intake topics are closed, the closing question has been asked, and the patient confirmed nothing else to add. Use a single short farewell sentence.",
   input_schema: {
     type: "object" as const,
     properties: {

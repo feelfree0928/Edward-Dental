@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { SessionRow } from "@/lib/supabase";
+import { NAME_PROMPT_MESSAGE } from "@/lib/consent-verification";
 import {
   isMissingRelationError,
   resolveSupabaseClient,
@@ -77,7 +78,17 @@ export async function POST(req: Request) {
       throw new Error(error?.message ?? "Failed to create session");
     }
 
-    return NextResponse.json(rowToSessionResponse(data, 0), { status: 201 });
+    const { error: welcomeErr } = await supabase.from("messages").insert({
+      session_id: data.id,
+      role: "assistant",
+      content: NAME_PROMPT_MESSAGE,
+    });
+
+    if (welcomeErr) {
+      throw new Error(welcomeErr.message);
+    }
+
+    return NextResponse.json(rowToSessionResponse(data, 1), { status: 201 });
   } catch (error) {
     return toErrorResponse(error, "Failed to create session");
   }

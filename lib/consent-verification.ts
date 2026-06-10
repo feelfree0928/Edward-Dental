@@ -24,6 +24,15 @@ export const CONSENT_DECLINE_MESSAGE =
 
 export const INTAKE_WELCOME_MESSAGE = "Thank you. What brings you in today?";
 
+export const NAME_PROMPT_MESSAGE =
+  "Welcome to Edward's Dental. Our AI assistant is ready to help prepare for your visit. May we have your name? You can reply \"anonymous\" to continue without a name.";
+
+export const INTAKE_CLOSING_QUESTION =
+  "Is there anything else you'd like to add before we finish?";
+
+/** Patient message sent when choosing Continue Anonymously from the start screen. */
+export const ANONYMOUS_NAME_SENTINEL = "anonymous";
+
 export type ConsentOutcome = "yes" | "no" | "question" | "unclear";
 
 export function buildConsentAgreementPrompt(answer: string): string {

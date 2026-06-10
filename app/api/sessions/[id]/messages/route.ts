@@ -14,6 +14,11 @@ import {
   isRepeatedPatientMessage,
 } from "@/lib/anthropic";
 import {
+  handleConsentAnswer,
+  handleNameCapture,
+  isAwaitingConsentAnswer,
+} from "@/lib/patient-chat";
+import {
   ApiError,
   endSessionWithSummary,
   messageRowToApi,
@@ -52,7 +57,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (sessionErr || !session) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
-    if (session.status !== "active") {
+
+    if (session.status !== "active" && session.status !== "pending_consent") {
       return NextResponse.json({ error: "Session is not active" }, { status: 400 });
     }
 
@@ -74,7 +80,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     const { data: msgRows, error: messagesErr } = await supabase
       .from("messages")
-      .select("role, content")
+      .select("role, content, created_at")
       .eq("session_id", sessionId)
       .order("created_at", { ascending: true });
 
@@ -83,6 +89,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
 
     const allMessages = msgRows ?? [];
+    const patientMessages = allMessages.filter((m) => m.role === "patient");
+
+    if (session.status === "pending_consent") {
+      if (patientMessages.length === 1) {
+        const assistantRows = await handleNameCapture(supabase, sessionId, content.trim());
+        const lastRow = assistantRows[assistantRows.length - 1];
+        return NextResponse.json(messageRowToApi(lastRow));
+      }
+
+      if (isAwaitingConsentAnswer(allMessages)) {
+        const result = await handleConsentAnswer(supabase, sessionId, content.trim(), allMessages);
+        const lastRow = result.assistantRows[result.assistantRows.length - 1];
+        return NextResponse.json({
+          ...messageRowToApi(lastRow),
+          sessionEnded: result.sessionEnded,
+          sessionActivated: result.sessionActivated,
+        });
+      }
+
+      throw new ApiError("Unexpected consent phase for this session.", 400);
+    }
+
     const chatMessages = allMessages.map((m) => ({
       role: m.role === "patient" ? ("user" as const) : ("assistant" as const),
       content: m.content as string,
